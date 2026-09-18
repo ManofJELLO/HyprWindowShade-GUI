@@ -57,7 +57,7 @@ fn main() {
                     "hyprwindowshade-gui: the interface failed to load ({}). \
                      Qt Quick Controls may be missing — on Arch that is the \
                      qt6-declarative package.",
-                    url.to_string()
+                    url
                 );
                 std::process::exit(1);
             })

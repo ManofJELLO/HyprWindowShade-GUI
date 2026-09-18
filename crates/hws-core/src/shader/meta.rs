@@ -297,14 +297,12 @@ pub fn parse(path: &str, source: &str, mtime: u64) -> ShaderInfo {
                     info.overlay = true;
                     info.overlay_line = Some(i);
                 }
-                "desc" | "description"
-                    if !rest.is_empty() => {
-                        info.description = Some(rest);
-                    }
-                "label" | "title"
-                    if !rest.is_empty() => {
-                        info.name = rest.trim_matches('"').to_string();
-                    }
+                "desc" | "description" if !rest.is_empty() => {
+                    info.description = Some(rest);
+                }
+                "label" | "title" if !rest.is_empty() => {
+                    info.name = rest.trim_matches('"').to_string();
+                }
                 "param" | "color" | "colour" | "bool" => match Annotation::parse(&key, &rest) {
                     Ok(ann) => match &ann.name {
                         Some(n) => named.push((n.clone(), ann)),

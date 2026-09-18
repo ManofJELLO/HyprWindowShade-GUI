@@ -119,12 +119,20 @@ pub fn layer_namespaces() -> Result<Vec<String>> {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/// The complaint `hl.dispatch` makes about a call that returned nothing.
+///
+/// The plugin's functions all return nothing, so every one of them trips this
+/// *after* having already done its work. It is the expected outcome here, not a
+/// failure.
+const NOT_A_DISPATCHER: &str = "expected a dispatcher";
+
 /// Run a plugin action against the live session.
 ///
-/// `hyprctl dispatch` evaluates its argument as Lua. The plugin's functions
-/// return nothing, so `hl.dispatch` rejects the call with a non-zero exit
-/// *after* the shader has already been applied — which is why the exit status
-/// is deliberately not treated as failure here.
+/// `hyprctl dispatch` evaluates its argument as Lua and reports the result on
+/// **stdout**, not stderr; its exit status is 7 for every plugin call whether
+/// or not the call worked, because `hl.dispatch` rejects the nil return. So
+/// stdout is the only thing that distinguishes a real failure — a bad path or
+/// malformed Lua — from the harmless complaint about the return value.
 pub fn dispatch(action: &Action) -> Result<()> {
     let expr = action.to_lua_call("hl.plugin.HyprWindowShade");
     let out =
@@ -135,13 +143,28 @@ pub fn dispatch(action: &Action) -> Result<()> {
             _ => Error::Hyprctl(e.to_string()),
         })?;
 
-    // Only a message that clearly is not the known false alarm is surfaced.
+    let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let trimmed = stderr.trim();
-    if !trimmed.is_empty() && !trimmed.contains("expected a dispatcher") {
-        return Err(Error::Hyprctl(trimmed.to_string()));
+    check_dispatch_output(&stdout, &stderr)
+}
+
+/// Decide whether a `hyprctl dispatch` run actually failed.
+///
+/// Split out from [`dispatch`] so it can be tested against real hyprctl output
+/// without a compositor.
+fn check_dispatch_output(stdout: &str, stderr: &str) -> Result<()> {
+    // stderr first: if hyprctl itself could not run the request (no instance,
+    // a socket problem) that is where it says so.
+    let complaint = [stderr.trim(), stdout.trim()].into_iter().find(|s| !s.is_empty());
+
+    match complaint {
+        None => Ok(()),
+        // The known false alarm: the call ran, it just returned nothing.
+        Some(s) if s.contains(NOT_A_DISPATCHER) => Ok(()),
+        // A successful dispatcher answers "ok".
+        Some("ok") => Ok(()),
+        Some(s) => Err(Error::Hyprctl(s.to_string())),
     }
-    Ok(())
 }
 
 /// Ask the plugin to drop its compiled shader cache.
@@ -197,6 +220,45 @@ mod tests {
             .collect();
         let got: Vec<String> = set.into_iter().collect();
         assert_eq!(got, vec!["mpvpaper", "rofi", "waybar"]);
+    }
+
+    // The three strings below are verbatim hyprctl 0.56.2 output, captured by
+    // running the commands against a live session. hyprctl writes all of them
+    // to stdout and leaves stderr empty, which is why `dispatch` reads stdout.
+
+    #[test]
+    fn the_nil_return_complaint_is_not_a_failure() {
+        let out = "error: return hl.dispatch(hl.plugin.HyprWindowShade.reloadshaders()):1: \
+                   hl.dispatch: expected a dispatcher (e.g. hl.dsp.window.close())\n";
+        assert!(check_dispatch_output(out, "").is_ok());
+    }
+
+    #[test]
+    fn a_real_lua_error_on_stdout_is_surfaced() {
+        // What a broken generated call looks like: the expression referred to a
+        // local that does not exist in the dispatch context.
+        let out = "error: [string \"return hl.dispatch(hl.plugin.HyprWindowShade....\"]:1: \
+                   attempt to concatenate a nil value (global 'hws_shaders')\n";
+        let err = check_dispatch_output(out, "").unwrap_err().to_string();
+        assert!(err.contains("concatenate a nil value"), "{err}");
+    }
+
+    #[test]
+    fn a_successful_dispatcher_is_not_a_failure() {
+        assert!(check_dispatch_output("ok\n", "").is_ok());
+    }
+
+    #[test]
+    fn stderr_still_wins_when_hyprctl_itself_cannot_run() {
+        let err = check_dispatch_output("", "Couldn't connect to the Hyprland socket")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("socket"), "{err}");
+    }
+
+    #[test]
+    fn silence_is_success() {
+        assert!(check_dispatch_output("", "").is_ok());
     }
 
     #[test]

@@ -83,6 +83,10 @@ pub fn from_document(document: &str) -> Imported {
 
 /// Import from a source that is already free of the managed block.
 pub fn scan(source: &str) -> Imported {
+    // A commented-out call is one the user deliberately switched off. Importing
+    // it would quietly turn it back on, so comments go first and everything
+    // below reads the blanked-out copy.
+    let source = &strip_comments(source);
     let locals = collect_locals(source);
     let mut out = Imported::default();
     let mut next = 1usize;
@@ -306,12 +310,11 @@ fn eval(expr: &str, locals: &HashMap<String, String>) -> Option<String> {
         if p.is_empty() {
             return None;
         }
-        if let Some(s) = lua_string(p) {
-            out.push_str(&s);
-        } else if let Some(v) = locals.get(p) {
-            out.push_str(v);
-        } else {
-            return None;
+        match lua_string(p) {
+            Some(s) => out.push_str(&s),
+            // Not a literal, so it has to be a local this file defines —
+            // anything else is something we refuse to guess at.
+            None => out.push_str(locals.get(p)?),
         }
     }
     Some(out)
@@ -384,19 +387,193 @@ fn lua_string(s: &str) -> Option<String> {
     Some(out)
 }
 
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+
+/// Replace every Lua comment with spaces, keeping newlines.
+///
+/// The result has exactly the same length as the input, so every byte offset
+/// the rest of this module computes still lines up with the original source.
+/// Both comment forms are handled — `--` to end of line, and the long form
+/// `--[[ … ]]` / `--[==[ … ]==]` — and `--` inside a string is left alone.
+fn strip_comments(source: &str) -> String {
+    let src = source.as_bytes();
+    let mut out = src.to_vec();
+    let mut i = 0usize;
+
+    while i < src.len() {
+        match src[i] {
+            // A comment. Its long form starts with a bracket right after the
+            // dashes; `--  hl.exec_cmd([[x]])` is an ordinary line comment.
+            b'-' if src.get(i + 1) == Some(&b'-') => {
+                let end = match long_bracket(src, i + 2) {
+                    Some((level, body)) => skip_long(src, body, level),
+                    None => line_end(src, i),
+                };
+                for c in out[i..end].iter_mut() {
+                    if *c != b'\n' {
+                        *c = b' ';
+                    }
+                }
+                i = end;
+            }
+            // Strings are skipped whole so a `--` inside one survives.
+            q @ (b'"' | b'\'') => {
+                i += 1;
+                while i < src.len() {
+                    match src[i] {
+                        b'\\' => i += 2,
+                        // An unterminated literal ends at the line break,
+                        // rather than swallowing the rest of the file.
+                        b'\n' => break,
+                        c if c == q => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'[' => match long_bracket(src, i) {
+                Some((level, body)) => i = skip_long(src, body, level),
+                None => i += 1,
+            },
+            _ => i += 1,
+        }
+    }
+
+    // Only whole comment spans were overwritten, and only with ASCII spaces,
+    // so this cannot have split a multi-byte character.
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// Recognise a long bracket — `[[`, `[=[`, `[==[` … — at `at`.
+///
+/// Returns its level (the number of `=`) and the offset just past the opening.
+fn long_bracket(src: &[u8], at: usize) -> Option<(usize, usize)> {
+    if src.get(at) != Some(&b'[') {
+        return None;
+    }
+    let mut i = at + 1;
+    while src.get(i) == Some(&b'=') {
+        i += 1;
+    }
+    (src.get(i) == Some(&b'[')).then(|| (i - at - 1, i + 1))
+}
+
+/// From just past an opening long bracket, the offset just past its close.
+fn skip_long(src: &[u8], from: usize, level: usize) -> usize {
+    let mut i = from;
+    while i < src.len() {
+        if src[i] == b']' {
+            let mut j = i + 1;
+            while src.get(j) == Some(&b'=') {
+                j += 1;
+            }
+            if j - i - 1 == level && src.get(j) == Some(&b']') {
+                return j + 1;
+            }
+        }
+        i += 1;
+    }
+    src.len()
+}
+
+/// The offset of the newline ending the line containing `from`, or the end.
+fn line_end(src: &[u8], from: usize) -> usize {
+    src[from..].iter().position(|c| *c == b'\n').map_or(src.len(), |p| from + p)
+}
+
+// ---------------------------------------------------------------------------
+// Locals
+// ---------------------------------------------------------------------------
+
 fn collect_locals(source: &str) -> HashMap<String, String> {
     static R: OnceLock<Regex> = OnceLock::new();
     let re = R.get_or_init(|| {
         Regex::new(r#"(?m)^\s*local\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"\n]*"|'[^'\n]*')\s*$"#)
             .expect("locals regex")
     });
-    re.captures_iter(source)
+    let mut out: HashMap<String, String> = re
+        .captures_iter(source)
         .filter_map(|c| {
             let name = c.get(1)?.as_str().to_string();
             let value = lua_string(c.get(2)?.as_str())?;
             Some((name, value))
         })
-        .collect()
+        .collect();
+
+    out.extend(collect_table_locals(source));
+    out
+}
+
+/// Fields of a table-valued local, keyed as they are written in the source.
+///
+/// `local shaders = { wobble = "/p/w.glsl" }` registers `shaders.wobble`, which
+/// is how a config that keeps its paths in one table refers to them. Only the
+/// table's own fields count: a key nested in a sub-table is not reachable by
+/// that name, so treating it as one would be a guess.
+fn collect_table_locals(source: &str) -> HashMap<String, String> {
+    static OPEN: OnceLock<Regex> = OnceLock::new();
+    let open_re = OPEN.get_or_init(|| {
+        Regex::new(r"(?m)^[^\S\n]*local\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{")
+            .expect("table local regex")
+    });
+    static FIELD: OnceLock<Regex> = OnceLock::new();
+    let field_re = FIELD.get_or_init(|| {
+        Regex::new(r#"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"\n]*"|'[^'\n]*')"#)
+            .expect("table field regex")
+    });
+
+    let mut out = HashMap::new();
+    for caps in open_re.captures_iter(source) {
+        let name = &caps[1];
+        // The `{` is the last byte the pattern consumed.
+        let open = caps.get(0).expect("group 0").end() - 1;
+        let Some(close) = match_brace(source, open) else { continue };
+
+        let body = mask_nested(&source[open + 1..close]);
+        for f in field_re.captures_iter(&body) {
+            let (Some(key), Some(raw)) = (f.get(1), f.get(2)) else { continue };
+            let Some(value) = lua_string(raw.as_str()) else { continue };
+            out.insert(format!("{name}.{}", key.as_str()), value);
+        }
+    }
+    out
+}
+
+/// Blank out everything nested inside a sub-table, keeping offsets and
+/// newlines, so a scan of the result only sees a table's own fields.
+fn mask_nested(body: &str) -> String {
+    let src = body.as_bytes();
+    let mut out = src.to_vec();
+    let mut depth = 0i32;
+    let mut in_str: Option<u8> = None;
+
+    for i in 0..src.len() {
+        let c = src[i];
+        if let Some(q) = in_str {
+            if c == q {
+                in_str = None;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => in_str = Some(c),
+            b'{' | b'(' | b'[' => {
+                depth += 1;
+                continue;
+            }
+            b'}' | b')' | b']' => depth -= 1,
+            _ => {}
+        }
+        if depth > 0 && out[i] != b'\n' {
+            out[i] = b' ';
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| body.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -729,6 +906,123 @@ hl.plugin.HyprWindowShade.classshader("kitty", "/p/x.glsl")
         let got = from_document(&doc);
         assert_eq!(got.rules.len(), 1);
         assert_eq!(got.rules[0].match_.class.as_deref(), Some("mpv"));
+    }
+
+    #[test]
+    fn a_commented_out_call_is_not_imported() {
+        // Verbatim from a real hyprland.lua: a pair of layer animations the
+        // author had switched off. Importing them would turn them back on.
+        let src = r#"
+hl.on("hyprland.start", function()
+--    hl.exec_cmd([[sleep 3 && hyprctl dispatch "hl.plugin.HyprWindowShade.layeropenanim('rofi', '/p/rofi_open.glsl')"]])
+--    hl.exec_cmd([[sleep 3 && hyprctl dispatch "hl.plugin.HyprWindowShade.layercloseanim('rofi', '/p/rofi_close.glsl')"]])
+end)
+"#;
+        let got = scan(src);
+        assert!(got.is_empty(), "imported dead code: {:?}", got.layers);
+        assert!(got.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_commented_out_rule_is_not_imported() {
+        let src = r#"
+-- hl.window_rule({ match = { class = "kitty" }, tag = "+shader:/p/a.glsl" })
+hl.window_rule({ match = { class = "mpv" }, tag = "+shader:/p/b.glsl" })
+"#;
+        let got = scan(src);
+        assert_eq!(got.rules.len(), 1);
+        assert_eq!(got.rules[0].match_.class.as_deref(), Some("mpv"));
+    }
+
+    #[test]
+    fn a_long_comment_is_not_imported() {
+        let src = r#"
+--[[
+hl.window_rule({ match = { class = "kitty" }, tag = "+shader:/p/a.glsl" })
+]]
+hl.window_rule({ match = { class = "mpv" }, tag = "+shader:/p/b.glsl" })
+"#;
+        let got = scan(src);
+        assert_eq!(got.rules.len(), 1);
+        assert_eq!(got.rules[0].match_.class.as_deref(), Some("mpv"));
+    }
+
+    #[test]
+    fn two_dashes_inside_a_string_are_not_a_comment() {
+        let src = r#"hl.window_rule({ match = { title = "a -- b" }, tag = "+shader:/p/a.glsl" })"#;
+        let got = scan(src);
+        assert_eq!(got.rules.len(), 1);
+        assert_eq!(got.rules[0].match_.title.as_deref(), Some("a -- b"));
+    }
+
+    #[test]
+    fn a_table_of_paths_resolves() {
+        // The pattern a real config uses: every shader path in one local table.
+        let src = r#"
+local shaders = {
+    wobble      = "/home/u/.config/hypr/shaders/wobble.glsl",
+    chromaGlitch= "/home/u/.config/hypr/shaders/chromaGlitch.glsl",
+}
+
+hl.window_rule({
+    match = { class = "kitty" },
+    tag   = "+shader_move:" .. shaders.wobble,
+})
+hl.window_rule({
+    match = { class = "mpv" },
+    tag   = "+shader_inactive_default:" .. shaders.chromaGlitch,
+})
+"#;
+        let got = scan(src);
+        assert!(got.skipped.is_empty(), "{:?}", got.skipped);
+        assert_eq!(got.rules.len(), 2);
+        match &got.rules[0].tags[0].value {
+            TagValue::Path(p) => assert_eq!(p.path, "/home/u/.config/hypr/shaders/wobble.glsl"),
+            _ => panic!("expected a path"),
+        }
+        assert_eq!(got.rules[1].tags[0].slot, TagSlot::Inactive);
+        assert!(got.rules[1].tags[0].is_default);
+    }
+
+    #[test]
+    fn a_table_local_also_resolves_in_a_plugin_call() {
+        let src = r#"
+local shaders = { pixelate = "/p/pixelate.glsl" }
+hl.plugin.HyprWindowShade.classshader("kitty", shaders.pixelate)
+"#;
+        let got = scan(src);
+        assert!(got.skipped.is_empty(), "{:?}", got.skipped);
+        assert_eq!(got.startup.len(), 1);
+        match &got.startup[0].action {
+            Action::ClassShader { class, shader } => {
+                assert_eq!(class, "kitty");
+                assert_eq!(shader.as_ref().unwrap().path, "/p/pixelate.glsl");
+            }
+            other => panic!("expected a class shader, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_key_nested_in_a_sub_table_is_not_reachable() {
+        // `t.b` is nil in Lua here, so resolving it would be a guess.
+        let src = r#"
+local t = { a = { b = "/p/x.glsl" } }
+hl.window_rule({ match = { class = "k" }, tag = "+shader:" .. t.b })
+"#;
+        let got = scan(src);
+        assert!(got.rules.is_empty());
+        assert_eq!(got.skipped.len(), 1);
+    }
+
+    #[test]
+    fn a_commented_out_local_does_not_resolve() {
+        let src = r#"
+-- local shaders = "/old/path"
+hl.window_rule({ match = { class = "k" }, tag = "+shader:" .. shaders .. "/x.glsl" })
+"#;
+        let got = scan(src);
+        assert!(got.rules.is_empty());
+        assert_eq!(got.skipped.len(), 1);
     }
 
     #[test]

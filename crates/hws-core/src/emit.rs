@@ -189,17 +189,7 @@ fn match_fields(rule: &WindowRule) -> String {
 // ---------------------------------------------------------------------------
 
 fn emit_startup(out: &mut String, config: &Config, ctx: &Ctx) {
-    let layer_calls = layer_calls(config, ctx);
-    let startup_calls: Vec<String> = config
-        .startup
-        .iter()
-        .filter(|s| s.enabled)
-        // Routed through the same renderer the keybinds use, so a startup
-        // shader path also goes through the directory variable.
-        .map(|s| plugin_call(&s.action, ctx))
-        .collect();
-
-    let calls: Vec<String> = layer_calls.into_iter().chain(startup_calls).collect();
+    let calls = startup_calls(config, ctx);
     let loader = load_line(config);
 
     if calls.is_empty() && loader.is_none() {
@@ -220,7 +210,11 @@ fn emit_startup(out: &mut String, config: &Config, ctx: &Ctx) {
 
     if !calls.is_empty() {
         if config.startup_delay_secs > 0.0 {
-            emit_delayed(out, config, &calls);
+            // Each dispatched expression is evaluated in a fresh Lua context
+            // where this file's locals do not exist, so `hws_shaders` would be
+            // nil there. Re-render those calls with the paths written out.
+            let literal = Ctx { dir: ctx.dir.clone(), use_var: false };
+            emit_delayed(out, config, &startup_calls(config, &literal));
         } else {
             out.push_str(&format!("    local {NS_VAR} = hl.plugin.HyprWindowShade\n"));
             out.push_str(&format!("    if not {NS_VAR} then\n"));
@@ -267,6 +261,21 @@ fn emit_delayed(out: &mut String, config: &Config, calls: &[String]) {
         "    hl.exec_cmd({})\n",
         lua_quote(&format!("sh -c {}", shell_single_quote(&inner)))
     ));
+}
+
+/// Every plugin call the session-start handler makes, layers first.
+///
+/// Rendered against a caller-supplied [`Ctx`] because the delayed variant needs
+/// the same calls with full paths rather than the directory variable.
+fn startup_calls(config: &Config, ctx: &Ctx) -> Vec<String> {
+    let actions = config
+        .startup
+        .iter()
+        .filter(|s| s.enabled)
+        // Routed through the same renderer the keybinds use, so a startup
+        // shader path also goes through the directory variable.
+        .map(|s| plugin_call(&s.action, ctx));
+    layer_calls(config, ctx).into_iter().chain(actions).collect()
 }
 
 fn layer_calls(config: &Config, ctx: &Ctx) -> Vec<String> {
@@ -495,6 +504,55 @@ mod tests {
         assert!(out.contains("sleep 1.5"));
         assert!(out.contains("hl.plugin.HyprWindowShade.layershader"));
         assert!(out.contains(">/dev/null 2>&1"));
+    }
+
+    #[test]
+    fn a_delayed_call_does_not_reference_the_lua_local() {
+        // hyprctl dispatch evaluates each expression on its own, in a context
+        // where this file's locals do not exist. Referring to hws_shaders there
+        // fails with "attempt to concatenate a nil value" — and because the
+        // dispatch discards its output, it fails silently.
+        let mut c = cfg();
+        c.startup_delay_secs = 1.5;
+        let mut l = LayerEntry::new("l1", "rofi");
+        l.shader = Some(ShaderRef::new("/home/u/.config/hypr/shaders/blur.glsl"));
+        l.open_anim = Some(ShaderRef {
+            path: "/home/u/.config/hypr/shaders/open.glsl".into(),
+            duration: Some(0.2),
+        });
+        c.layers.push(l);
+        c.startup.push(StartupAction {
+            id: "s1".into(),
+            enabled: true,
+            action: Action::ClassShader {
+                class: "kitty".into(),
+                shader: Some(ShaderRef::new("/home/u/.config/hypr/shaders/read.glsl")),
+            },
+        });
+
+        let out = emit(&c).unwrap();
+        let dispatched: Vec<&str> = out.lines().filter(|l| l.contains("hl.exec_cmd")).collect();
+        assert_eq!(dispatched.len(), 1, "the calls go out in one exec_cmd");
+        assert_eq!(dispatched[0].matches("hyprctl dispatch").count(), 3, "one per call");
+
+        let line = dispatched[0];
+        assert!(!line.contains(DIR_VAR), "{DIR_VAR} is nil inside hyprctl dispatch: {line}");
+        // The paths are still there, just written in full.
+        assert!(line.contains("/home/u/.config/hypr/shaders/blur.glsl"));
+        assert!(line.contains("/home/u/.config/hypr/shaders/open.glsl@0.2"));
+        assert!(line.contains("/home/u/.config/hypr/shaders/read.glsl"));
+    }
+
+    #[test]
+    fn the_undelayed_handler_still_uses_the_directory_variable() {
+        let mut c = cfg();
+        let mut l = LayerEntry::new("l1", "rofi");
+        l.shader = Some(ShaderRef::new("/home/u/.config/hypr/shaders/blur.glsl"));
+        c.layers.push(l);
+
+        let out = emit(&c).unwrap();
+        assert!(out.contains(r#"hws.layershader("rofi", hws_shaders .. "/blur.glsl")"#));
+        assert!(!out.contains("hyprctl dispatch"));
     }
 
     #[test]

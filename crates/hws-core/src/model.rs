@@ -622,7 +622,6 @@ pub enum LoadMode {
     Manual,
 }
 
-
 /// Everything the GUI manages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
