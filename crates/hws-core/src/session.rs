@@ -32,6 +32,32 @@ pub struct Live {
     pub namespaces: Vec<String>,
 }
 
+/// Which part of the app noticed a problem.
+///
+/// Refreshing one source clears only the problems that source reported. The
+/// alternative — matching on the text of the message — silently stops working
+/// the moment a message is reworded, and quietly accumulates duplicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Reading `settings.toml`.
+    Settings,
+    /// Reading the managed block out of the Lua config.
+    Config,
+    /// Scanning the shader directory.
+    Shaders,
+    /// Loading theme files.
+    Themes,
+}
+
+/// A non-fatal problem, and where it came from.
+#[derive(Debug, Clone)]
+pub struct Problem {
+    /// What noticed it.
+    pub source: Source,
+    /// What to show the user.
+    pub text: String,
+}
+
 /// The whole application state.
 pub struct Session {
     /// App settings.
@@ -48,31 +74,33 @@ pub struct Session {
     pub themes: Vec<Theme>,
     /// Live compositor information.
     pub live: Live,
-    /// Non-fatal problems worth showing.
-    pub problems: Vec<String>,
+    /// Non-fatal problems worth showing, tagged with what reported them.
+    pub problems: Vec<Problem>,
 }
 
 impl Session {
     /// Load settings, the config and the shader list.
     pub fn load() -> Self {
         let (settings, settings_problem) = Settings::load();
-        let mut problems: Vec<String> = settings_problem.into_iter().collect();
+        let mut problems: Vec<Problem> = settings_problem
+            .into_iter()
+            .map(|text| Problem { source: Source::Settings, text })
+            .collect();
 
         let config = match read_config(&settings.resolved_config_path()) {
             Ok(c) => c,
             Err(e) => {
-                problems.push(e.to_string());
+                problems.push(Problem { source: Source::Config, text: e.to_string() });
                 Config::default()
             }
         };
 
         let (themes, theme_problems) = theme::load_all();
-        problems.extend(theme_problems);
-        let theme = themes
-            .iter()
-            .find(|t| t.id == config.theme)
-            .cloned()
-            .unwrap_or_else(theme::gruvbox_dark);
+        problems.extend(
+            theme_problems.into_iter().map(|text| Problem { source: Source::Themes, text }),
+        );
+        let theme =
+            themes.iter().find(|t| t.id == config.theme).cloned().unwrap_or_else(theme::system);
 
         let mut session = Session {
             settings,
@@ -94,45 +122,55 @@ impl Session {
         self.config != self.saved
     }
 
+    /// Drop every problem one source reported, before it reports again.
+    fn forget(&mut self, source: Source) {
+        self.problems.retain(|p| p.source != source);
+    }
+
+    /// The problems as the UI shows them.
+    pub fn messages(&self) -> Vec<String> {
+        self.problems.iter().map(|p| p.text.clone()).collect()
+    }
+
     /// Re-read the shader directory.
     pub fn rescan_shaders(&mut self) {
         let dir = paths::expand(&self.config.shader_dir);
-        self.problems.retain(|p| !p.contains("shader folder"));
+        self.forget(Source::Shaders);
         match shader::scan_dir(&dir) {
             Ok(list) => self.shaders = list,
             Err(e) => {
                 self.shaders.clear();
-                self.problems.push(e.to_string());
+                self.problems.push(Problem { source: Source::Shaders, text: e.to_string() });
             }
         }
     }
 
     /// Ask the compositor what is on screen. Never fails; absence is just
     /// reported as "not running".
+    ///
+    /// This runs three `hyprctl` processes and takes tens of milliseconds, so
+    /// a UI should prefer [`probe_live`] on a background thread and hand the
+    /// answer back through [`Session::set_live`].
     pub fn refresh_live(&mut self) {
-        let running = hyprctl::is_running();
-        self.live = Live {
-            running,
-            plugin_loaded: running && hyprctl::plugin_loaded().unwrap_or(false),
-            classes: if running { hyprctl::classes().unwrap_or_default() } else { Vec::new() },
-            namespaces: if running {
-                hyprctl::layer_namespaces().unwrap_or_default()
-            } else {
-                Vec::new()
-            },
-        };
+        self.live = probe_live();
+    }
+
+    /// Store the result of a [`probe_live`] run made elsewhere.
+    pub fn set_live(&mut self, live: Live) {
+        self.live = live;
     }
 
     /// Re-read the theme list and resolve the configured one.
     fn refresh_theme(&mut self) {
         let (themes, problems) = theme::load_all();
-        self.problems.retain(|p| !p.starts_with("theme `"));
-        self.problems.extend(problems);
+        self.forget(Source::Themes);
+        self.problems
+            .extend(problems.into_iter().map(|text| Problem { source: Source::Themes, text }));
         self.theme = themes
             .iter()
             .find(|t| t.id == self.config.theme)
             .cloned()
-            .unwrap_or_else(theme::gruvbox_dark);
+            .unwrap_or_else(theme::system);
         self.themes = themes;
     }
 
@@ -278,7 +316,7 @@ impl Session {
                 .collect::<Vec<_>>(),
             "tagCatalog": tag_catalog(),
             "uniformCatalog": uniform_catalog(),
-            "problems": self.problems,
+            "problems": self.messages(),
             "appVersion": env!("CARGO_PKG_VERSION"),
         })
     }
@@ -801,6 +839,25 @@ impl Session {
 // Free helpers
 // ---------------------------------------------------------------------------
 
+/// Ask the compositor what is on screen.
+///
+/// Free of `Session`, and so free of anything the UI thread owns: three
+/// `hyprctl` processes are roughly a dropped frame's worth of work, which is
+/// no business of a thread that is meant to be drawing.
+pub fn probe_live() -> Live {
+    let running = hyprctl::is_running();
+    Live {
+        running,
+        plugin_loaded: running && hyprctl::plugin_loaded().unwrap_or(false),
+        classes: if running { hyprctl::classes().unwrap_or_default() } else { Vec::new() },
+        namespaces: if running {
+            hyprctl::layer_namespaces().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
 fn read_config(path: &Path) -> Result<Config> {
     if !path.exists() {
         return Ok(Config::default());
@@ -1013,6 +1070,36 @@ mod tests {
         assert_eq!(s.config.rules[0].id, first);
         s.command("rule.move", &json!({ "id": first, "delta": 99 })).unwrap();
         assert_eq!(s.config.rules[2].id, first);
+    }
+
+    #[test]
+    fn rescanning_replaces_its_own_problem_rather_than_stacking_them() {
+        let mut s = session();
+        s.problems
+            .push(Problem { source: Source::Settings, text: "settings.toml is unreadable".into() });
+        s.config.shader_dir = "/nonexistent/hws/shaders".into();
+
+        for _ in 0..3 {
+            s.rescan_shaders();
+        }
+
+        let shader_problems = s.problems.iter().filter(|p| p.source == Source::Shaders).count();
+        assert_eq!(shader_problems, 1, "{:?}", s.messages());
+        // And the unrelated one is still there.
+        assert!(s.messages().iter().any(|m| m.contains("settings.toml")));
+    }
+
+    #[test]
+    fn a_shader_directory_that_starts_working_clears_its_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session();
+        s.config.shader_dir = "/nonexistent/hws/shaders".into();
+        s.rescan_shaders();
+        assert_eq!(s.problems.iter().filter(|p| p.source == Source::Shaders).count(), 1);
+
+        s.config.shader_dir = dir.path().to_string_lossy().into_owned();
+        s.rescan_shaders();
+        assert!(s.messages().is_empty(), "{:?}", s.messages());
     }
 
     #[test]

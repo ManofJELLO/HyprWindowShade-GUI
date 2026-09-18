@@ -27,9 +27,14 @@ fn main() {
         return;
     }
 
-    // Qt Quick Controls' Basic style is the one that honours a custom palette
-    // without fighting the platform theme, which is what the Gruvbox themes
-    // need. Setting it here means the app looks the same on any desktop.
+    // Every control in this app draws its own background and contents, so the
+    // Qt Quick Controls style only decides the few parts Qt still draws — and
+    // Basic is the one that does not impose colours of its own on them.
+    //
+    // This does not stand between the app and the desktop's colours: the
+    // palette comes from the platform theme regardless of the style, and the
+    // default theme reads it. Overriding this variable changes how those
+    // remaining parts are drawn, not what colour anything is.
     if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
         std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Basic");
     }

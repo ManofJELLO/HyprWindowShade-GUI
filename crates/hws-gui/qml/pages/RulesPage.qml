@@ -437,9 +437,11 @@ Item {
                                                 HoverHandler {
                                                     id: tagHover
                                                 }
-                                                ToolTip.visible: tagHover.hovered
-                                                ToolTip.text: tagRow.modelData.help
-                                                ToolTip.delay: 400
+                                                Tip {
+                                                    visible: tagHover.hovered
+                                                    delay: 400
+                                                    text: tagRow.modelData.help
+                                                }
                                             }
 
                                             // Flag-valued tags are a switch.

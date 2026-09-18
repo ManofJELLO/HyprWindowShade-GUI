@@ -198,6 +198,9 @@ Item {
                 FieldRow {
                     width: parent.width
                     label: "Theme"
+                    hint: "System follows your Qt colours, so the app matches the rest of your " +
+                          "desktop and changes with it. The Gruvboxes ignore it and look the " +
+                          "same everywhere."
 
                     Dropdown {
                         width: parent.width

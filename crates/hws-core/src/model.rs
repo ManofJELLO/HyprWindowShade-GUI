@@ -669,7 +669,8 @@ fn default_version() -> u32 {
 }
 
 fn default_theme() -> String {
-    "gruvbox-dark".into()
+    // The desktop's own colours, until someone picks otherwise.
+    "system".into()
 }
 
 impl Default for Config {
@@ -768,7 +769,9 @@ pub fn lua_quote(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
+            // Padded to three digits: Lua reads up to three, so a bare `\7`
+            // followed by a digit would be parsed as a different character.
+            c if (c as u32) < 0x20 || c == '\x7f' => out.push_str(&format!("\\{:03}", c as u32)),
             c => out.push(c),
         }
     }
@@ -842,6 +845,13 @@ mod tests {
     #[test]
     fn quoting_escapes() {
         assert_eq!(lua_quote(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn a_control_character_escape_cannot_swallow_the_next_digit() {
+        // `"\70"` would be one character, not a bell followed by a zero.
+        assert_eq!(lua_quote("\u{7}0"), r#""\0070""#);
+        assert_eq!(lua_quote("\u{1}"), r#""\001""#);
     }
 
     #[test]

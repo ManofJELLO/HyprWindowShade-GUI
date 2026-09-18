@@ -15,6 +15,15 @@ ApplicationWindow {
     color: Theme.bg
     opacity: Theme.windowOpacity
 
+    // Everything in this app styles its own background and contentItem, with
+    // one exception: the scrollbar handles Qt builds inside each ScrollView,
+    // which there is no handle on and which draw from the palette. Setting the
+    // three roles they read, once, here, is less noise than giving eight
+    // ScrollViews an explicit ScrollBar apiece.
+    palette.mid: Theme.border
+    palette.dark: Theme.muted
+    palette.text: Theme.fg
+
     readonly property var pages: [
         { label: "Rules",    hint: "Windows" },
         { label: "Shaders",  hint: "Files" },
@@ -30,6 +39,7 @@ ApplicationWindow {
     // themselves, which keeps the module free of circular dependencies.
     Component.onCompleted: {
         App.backend = Backend
+        App.confirmDialog = confirm
         window.syncState()
     }
 
@@ -52,12 +62,37 @@ ApplicationWindow {
 
     // The compositor's window list changes while the app is open, so the
     // pickers are refreshed periodically rather than only at startup.
+    //
+    // The probe runs on a background thread, so this costs the interface
+    // nothing; it is still paused while the window is in the background,
+    // because three hyprctl processes every five seconds for a list nobody is
+    // looking at is rude. Firing on start means switching back refreshes at
+    // once rather than showing a stale list until the next tick.
     Timer {
         interval: 5000
-        running: true
+        running: window.active
         repeat: true
-        onTriggered: App.run("live.refresh", {})
+        triggeredOnStart: true
+        onTriggered: App.refreshLive()
     }
+
+    // Nothing here is written to disk until Save, so closing with unsaved work
+    // loses it silently. The title bar says so; that is not enough.
+    onClosing: function (close) {
+        if (App.dirty && !window.quitConfirmed) {
+            close.accepted = false
+            confirm.ask("Close without saving?",
+                        "Your rules, layers and keybinds have not been written to "
+                        + App.configPathDisplay + ". Shader edits were saved as you made them.",
+                        "Discard and close", true,
+                        function () {
+                            window.quitConfirmed = true
+                            window.close()
+                        })
+        }
+    }
+
+    property bool quitConfirmed: false
 
     Shortcut {
         sequences: [StandardKey.Save]
@@ -315,6 +350,11 @@ ApplicationWindow {
     Toast {
         id: toast
         anchors.fill: parent
+    }
+
+    // Above the toast: a question has to be answerable even while one is up.
+    ConfirmDialog {
+        id: confirm
     }
 
     // Development aid: with HWS_SHOT_DIR set, render each page to a PNG there

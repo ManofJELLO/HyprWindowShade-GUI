@@ -60,6 +60,8 @@ pub fn set_overlay_on_disk(
 mod tests {
     use super::*;
 
+    // `keep = 0` so the backups these take are pruned again immediately: a
+    // test has no business leaving files in the real configuration directory.
     #[test]
     fn editing_on_disk_round_trips_through_the_parser() {
         let d = tempfile::tempdir().unwrap();
@@ -67,15 +69,15 @@ mod tests {
         std::fs::write(&p, "// @param 0 1 0.01 \"Dim\"\nconst float DIM = 0.6;\nvoid main() {}\n")
             .unwrap();
 
-        let info = set_param_on_disk(&p, "DIM", &ParamValue::Scalar(0.25), 3).unwrap();
+        let info = set_param_on_disk(&p, "DIM", &ParamValue::Scalar(0.25), 0).unwrap();
         let dim = info.params.iter().find(|x| x.name == "DIM").unwrap();
         assert_eq!(dim.value, ParamValue::Scalar(0.25));
         assert!(dim.annotated);
 
-        let info = set_duration_on_disk(&p, Some(0.8), 3).unwrap();
+        let info = set_duration_on_disk(&p, Some(0.8), 0).unwrap();
         assert_eq!(info.duration, Some(0.8));
 
-        let info = set_overlay_on_disk(&p, true, 3).unwrap();
+        let info = set_overlay_on_disk(&p, true, 0).unwrap();
         assert!(info.overlay);
     }
 }

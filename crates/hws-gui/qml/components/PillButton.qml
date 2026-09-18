@@ -56,7 +56,9 @@ Button {
         elide: Text.ElideRight
     }
 
-    ToolTip.visible: control.tooltip !== "" && control.hovered
-    ToolTip.text: control.tooltip
-    ToolTip.delay: 500
+    Tip {
+        text: control.tooltip
+        visible: control.tooltip !== "" && control.hovered
+        delay: 500
+    }
 }

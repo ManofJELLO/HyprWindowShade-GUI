@@ -27,8 +27,14 @@ pub fn default_shader_dir() -> PathBuf {
 }
 
 /// `~/.config/hyprwindowshade-gui`, where this app keeps its own settings.
+///
+/// `HWS_CONFIG_DIR` overrides it, which is what to set when running the app
+/// against a throwaway configuration rather than your real one.
 pub fn app_config_dir() -> PathBuf {
-    config_home().join("hyprwindowshade-gui")
+    match std::env::var_os("HWS_CONFIG_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => config_home().join("hyprwindowshade-gui"),
+    }
 }
 
 /// Where backups of edited files go.
@@ -63,11 +69,18 @@ pub fn contract(path: &Path) -> String {
 ///
 /// Returns the backup path, or `None` if the source does not exist yet.
 pub fn backup(path: &Path, keep: usize) -> Result<Option<PathBuf>> {
+    backup_into(&backup_dir(), path, keep)
+}
+
+/// [`backup`], into a directory of the caller's choosing.
+///
+/// Separate so the naming and pruning can be exercised without writing into
+/// the real configuration directory.
+fn backup_into(dir: &Path, path: &Path, keep: usize) -> Result<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
     }
-    let dir = backup_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
 
     let stem =
         path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
@@ -81,7 +94,7 @@ pub fn backup(path: &Path, keep: usize) -> Result<Option<PathBuf>> {
     }
     std::fs::copy(path, &dest).map_err(|e| Error::io(&dest, e))?;
 
-    prune_backups(&dir, &stem, keep)?;
+    prune_backups(dir, &stem, keep)?;
     Ok(Some(dest))
 }
 
@@ -103,13 +116,34 @@ fn prune_backups(dir: &Path, stem: &str, keep: usize) -> Result<()> {
     if mine.len() <= keep {
         return Ok(());
     }
-    // Names are timestamped, so lexical order is chronological.
-    mine.sort();
+    mine.sort_by_key(|p| {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        backup_order(&name, &prefix)
+    });
     let excess = mine.len() - keep;
     for p in mine.into_iter().take(excess) {
         let _ = std::fs::remove_file(p);
     }
     Ok(())
+}
+
+/// Sort key for a backup's file name: when it was taken, then which one it was
+/// within that second.
+///
+/// The counter cannot be compared as text. A name is `stem.20260918-071638.bak`
+/// or, for the second save inside one second, `stem.20260918-071638-1.bak` —
+/// and `-` sorts before `.`, so as plain strings the newer copy looks like the
+/// older one and pruning would throw away the wrong file.
+fn backup_order(name: &str, prefix: &str) -> (String, u32) {
+    let rest = name.strip_prefix(prefix).unwrap_or(name);
+    let rest = rest.strip_suffix(".bak").unwrap_or(rest);
+    // The timestamp itself contains one `-`, between the date and the time.
+    let mut bits = rest.splitn(3, '-');
+    let date = bits.next().unwrap_or_default();
+    let time = bits.next().unwrap_or_default();
+    // No counter means the first copy taken that second.
+    let seq = bits.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (format!("{date}-{time}"), seq)
 }
 
 /// Write `contents` to `path` atomically: write a sibling temp file, fsync it,
@@ -141,6 +175,23 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         Error::io(path, e)
     })?;
+
+    // Make the rename itself durable.
+    //
+    // The contents were fsynced before the rename and the rename is atomic, so
+    // no crash can leave a half-written config either way. What the directory
+    // fsync buys is the rename surviving a power cut: without it the new file
+    // is on disk but the directory entry pointing at it may not be, and the
+    // save silently rolls back to the previous version.
+    //
+    // Best-effort on purpose. If the directory cannot be opened or synced the
+    // file is already written and renamed, and failing the save over it would
+    // trade a small durability gap for a loud error about nothing.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -164,6 +215,45 @@ mod tests {
     #[test]
     fn expand_leaves_absolute_paths_alone() {
         assert_eq!(expand("/etc/hosts"), PathBuf::from("/etc/hosts"));
+    }
+
+    #[test]
+    fn backups_within_one_second_order_by_their_counter() {
+        let p = "hyprland.lua.";
+        let mut names = vec![
+            "hyprland.lua.20260918-071638-2.bak".to_string(),
+            "hyprland.lua.20260918-071638.bak".to_string(),
+            "hyprland.lua.20260918-071638-1.bak".to_string(),
+            "hyprland.lua.20260918-071637.bak".to_string(),
+        ];
+        names.sort_by_key(|n| backup_order(n, p));
+        assert_eq!(
+            names,
+            vec![
+                "hyprland.lua.20260918-071637.bak",
+                "hyprland.lua.20260918-071638.bak",
+                "hyprland.lua.20260918-071638-1.bak",
+                "hyprland.lua.20260918-071638-2.bak",
+            ]
+        );
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.lua");
+        std::fs::write(&file, "x").unwrap();
+
+        // Three copies in quick succession, which normally collide on the
+        // one-second stamp and so exercise the counter.
+        let taken: Vec<PathBuf> =
+            (0..3).map(|_| backup_into(dir.path(), &file, 2).unwrap().unwrap()).collect();
+
+        let left: Vec<&PathBuf> = taken.iter().filter(|p| p.exists()).collect();
+        assert_eq!(left.len(), 2, "kept {left:?} of {taken:?}");
+        // The oldest is the one that went, whichever naming the clock produced.
+        assert!(!taken[0].exists(), "dropped the wrong one: {taken:?}");
+        assert!(taken[1].exists() && taken[2].exists(), "{taken:?}");
     }
 
     #[test]

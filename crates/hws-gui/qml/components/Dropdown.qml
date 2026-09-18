@@ -9,21 +9,31 @@ ComboBox {
     font.pixelSize: Theme.fontSize
 
     delegate: ItemDelegate {
+        id: item
+
+        required property int index
+
         width: control.width
-        highlighted: control.highlightedIndex === index
+        highlighted: control.highlightedIndex === item.index
+
         contentItem: Text {
-            text: control.textRole
-                  ? (Array.isArray(control.model)
-                     ? modelData[control.textRole]
-                     : model[control.textRole])
-                  : modelData
+            // `textAt` is the only lookup that is right for every model shape,
+            // and it is what `displayText` already uses — so the open list and
+            // the closed box cannot disagree.
+            //
+            // Reaching into `modelData` or `model` by hand is not right:
+            // assigning a JS array to `model` converts it to a QVariantList,
+            // so `Array.isArray` reads back false, and a model of objects then
+            // resolves to nothing at all. That looks like a list of blank rows
+            // that still select the correct entry.
+            text: control.textAt(item.index)
             color: Theme.fg
             font.pixelSize: Theme.fontSize
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
-            color: highlighted ? Theme.selection : Theme.surface
+            color: item.highlighted ? Theme.selection : Theme.surface
         }
     }
 

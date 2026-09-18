@@ -12,7 +12,9 @@ It does two things:
   and its `// @overlay`. The plugin reloads a shader when its mtime changes, so a slider here
   is a live change on screen.
 
-Gruvbox dark and light are built in; any other palette is a small TOML file.
+It wears your Qt colours by default, so it looks like the rest of your desktop.
+Gruvbox dark and light are built in if you would rather it did not; any other
+palette is a small TOML file.
 
 ---
 
@@ -200,6 +202,11 @@ plain literal gets a slider with a guessed range, marked *guessed range* in the 
 whose name contains `color`, `tint` or `rgb` and whose components are all in 0–1 becomes a
 colour picker.
 
+A `const` named like a mathematical constant — `PI`, `TAU`, `EPSILON` and the usual
+spellings of those — is left out and noted instead. It is not a tuning knob, and a slider
+that rewrites it quietly breaks the shader's maths. Annotate it with `// @param` if you
+really do want one.
+
 A `const` whose value is an expression — `const float A = 1.0 / 3.0;` — is left alone, on
 purpose: the app will not rewrite something it cannot read back.
 
@@ -217,13 +224,25 @@ Shader files are backed up before every edit, same as the config.
 
 ## Themes
 
-Gruvbox Dark and Gruvbox Light ship with the app. Anything else is a TOML file in
+**System (Qt)** is the default, and is the app taking its colours from Qt's palette —
+whatever your platform theme sets, whether that is qt6ct, Kvantum, a desktop's own
+theme, or nothing at all. Change your Qt theme and the app follows without a restart.
+
+Qt has no palette role meaning "success" or "warning", and `mid` is a light grey even
+under some dark themes, so those few colours are not taken from it: hairlines and shades
+are mixed from the window and text colours, which are always present and always in the
+right relationship to each other, and ok/warn/error are fixed in a light and a dark
+variant. The accent is the desktop's own accent colour where the platform reports one
+(Qt 6.6+), and the selection colour otherwise.
+
+**Gruvbox Dark** and **Gruvbox Light** ship with the app and ignore Qt entirely, so they
+look the same on any desktop. Anything else is a TOML file in
 `~/.config/hyprwindowshade-gui/themes/`; the file stem is the theme's name in the picker.
 *Settings → Write an example theme* drops a fully commented one there.
 
 ```toml
 name = "Example"
-base = "gruvbox-dark"     # what to start from; anything you omit comes from here
+base = "gruvbox-dark"     # gruvbox-dark or gruvbox-light; anything you omit comes from here
 dark = true
 opacity = 0.96            # 0.3 – 1.0; Hyprland composites the rest
 
@@ -274,6 +293,7 @@ looks like.
 | Hyprland config | Which file the block goes in. Default `~/.config/hypr/hyprland.lua`. |
 | Shader folder | Scanned for `.glsl`, `.frag`, `.fs`, one level of subfolders deep. Default `~/.config/hypr/shaders`. |
 | Backups to keep | Per file. Default 10. |
+| Theme | System (Qt) by default; Gruvbox Dark, Gruvbox Light, or anything in the theme folder. |
 | Shader paths | Whether to use the `hws_shaders` local or write full paths. |
 | Load the plugin | Nothing, `hyprpm reload -n`, or `hyprctl plugin load <path>`. |
 | Startup delay | See above. Zero unless you need it. |
@@ -322,7 +342,7 @@ crates/hws-core/src/
     block.rs      the marker block, and the state blob inside it
     import.rs     hand-written Lua -> model, conservatively
     shader/       scan, parse (@param, @duration, @overlay, uniforms), patch
-    theme.rs      Gruvbox, and the TOML loader
+    theme.rs      the built-ins, and the TOML loader
     hyprctl.rs    clients, layers, dispatch
     session.rs    the facade: one state document, one command entry point
 crates/hws-gui/

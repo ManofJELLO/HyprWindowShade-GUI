@@ -1,8 +1,13 @@
 //! Colours for the app's own window.
 //!
-//! Gruvbox dark and light are built in. Anything else is a TOML file in
-//! `~/.config/hyprwindowshade-gui/themes/`, which may override as few or as
-//! many of the colours as it likes and set the window's opacity.
+//! By default the app wears whatever Qt is already wearing, so it matches the
+//! rest of the desktop rather than announcing itself. Gruvbox dark and light
+//! are built in for anyone who would rather it did. Anything else is a TOML
+//! file in `~/.config/hyprwindowshade-gui/themes/`, which may override as few
+//! or as many of the colours as it likes and set the window's opacity.
+//!
+//! The system theme is the one thing this module cannot resolve on its own:
+//! reading a Qt palette needs Qt. It is named here and filled in by the UI.
 
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +59,15 @@ pub struct Theme {
     pub dark: bool,
     /// Window opacity, 0.3 to 1.0. Hyprland composites the rest.
     pub opacity: f32,
+    /// Take the colours from Qt's palette instead of from `colors`.
+    ///
+    /// Only the built-in `system` theme sets this. The engine has no way to
+    /// read a Qt palette — that is the one piece of theming the UI layer has
+    /// to supply — so `colors` here is a plain stand-in for anything that
+    /// reads the state document without a Qt palette to hand, such as
+    /// `--print-state`.
+    #[serde(default)]
+    pub system: bool,
     /// The colours.
     pub colors: Palette,
 }
@@ -65,6 +79,7 @@ pub fn gruvbox_dark() -> Theme {
         name: "Gruvbox Dark".into(),
         dark: true,
         opacity: 1.0,
+        system: false,
         colors: Palette {
             bg: "#282828".into(),
             bg_alt: "#1d2021".into(),
@@ -92,6 +107,7 @@ pub fn gruvbox_light() -> Theme {
         name: "Gruvbox Light".into(),
         dark: false,
         opacity: 1.0,
+        system: false,
         colors: Palette {
             bg: "#fbf1c7".into(),
             bg_alt: "#f2e5bc".into(),
@@ -112,9 +128,25 @@ pub fn gruvbox_light() -> Theme {
     }
 }
 
-/// The themes that ship with the app.
+/// The user's Qt colours, whatever they are.
+///
+/// The palette this stands for is read by the UI layer, which is the only part
+/// that can see one; the colours below are only what a reader with no Qt
+/// palette falls back to. See [`Theme::system`].
+pub fn system() -> Theme {
+    Theme {
+        id: "system".into(),
+        name: "System (Qt)".into(),
+        dark: true,
+        opacity: 1.0,
+        system: true,
+        colors: gruvbox_dark().colors,
+    }
+}
+
+/// The themes that ship with the app, the system one first.
 pub fn builtin() -> Vec<Theme> {
-    vec![gruvbox_dark(), gruvbox_light()]
+    vec![system(), gruvbox_dark(), gruvbox_light()]
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +154,11 @@ pub fn builtin() -> Vec<Theme> {
 // ---------------------------------------------------------------------------
 
 /// The on-disk shape of a theme file. Everything except `base` is optional.
+///
+/// Unknown keys are refused rather than ignored: a misspelled `accent_alt` that
+/// silently does nothing is a worse afternoon than one that says so by name.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThemeFile {
     /// Display name. Defaults to the file stem.
     pub name: Option<String>,
@@ -140,6 +176,7 @@ pub struct ThemeFile {
 
 /// Optional overrides for each colour role.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(missing_docs)]
 pub struct PaletteFile {
     pub bg: Option<String>,
@@ -262,7 +299,7 @@ pub fn load_all() -> (Vec<Theme>, Vec<String>) {
 /// Find a theme by id, falling back to Gruvbox dark.
 pub fn resolve(id: &str) -> Theme {
     let (themes, _) = load_all();
-    themes.into_iter().find(|t| t.id == id).unwrap_or_else(gruvbox_dark)
+    themes.into_iter().find(|t| t.id == id).unwrap_or_else(system)
 }
 
 /// Write a documented example theme file, so there is something to copy.
@@ -337,10 +374,28 @@ mod tests {
     #[test]
     fn builtins_are_distinct_and_named() {
         let b = builtin();
-        assert_eq!(b.len(), 2);
-        assert!(b[0].dark);
-        assert!(!b[1].dark);
-        assert_ne!(b[0].colors.bg, b[1].colors.bg);
+        let ids: Vec<&str> = b.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["system", "gruvbox-dark", "gruvbox-light"]);
+        assert!(b.iter().all(|t| !t.name.is_empty()));
+        // The two Gruvboxes are a dark/light pair and must not look alike.
+        assert!(b[1].dark);
+        assert!(!b[2].dark);
+        assert_ne!(b[1].colors.bg, b[2].colors.bg);
+    }
+
+    #[test]
+    fn only_the_system_theme_defers_to_qt() {
+        assert!(system().system);
+        assert!(!gruvbox_dark().system);
+        assert!(!gruvbox_light().system);
+        // A theme file always names its own colours, so it never defers.
+        assert!(!from_toml("mine", "base = \"gruvbox-light\"\n").unwrap().system);
+    }
+
+    #[test]
+    fn the_system_theme_is_the_default_and_the_fallback() {
+        assert_eq!(crate::model::Config::default().theme, "system");
+        assert_eq!(resolve("no-such-theme").id, "system");
     }
 
     #[test]
@@ -372,6 +427,18 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("accent"));
         assert!(msg.contains("blue"));
+    }
+
+    #[test]
+    fn a_misspelled_colour_key_is_reported_rather_than_ignored() {
+        let err = from_toml("mine", "[colors]\naccent_altt = \"#ffffff\"\n").unwrap_err();
+        assert!(err.to_string().contains("accent_altt"), "{err}");
+    }
+
+    #[test]
+    fn a_misspelled_top_level_key_is_reported_too() {
+        let err = from_toml("mine", "opacty = 0.9\n").unwrap_err();
+        assert!(err.to_string().contains("opacty"), "{err}");
     }
 
     #[test]

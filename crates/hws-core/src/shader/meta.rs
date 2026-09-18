@@ -16,8 +16,6 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::model::trim_float;
-
 /// Plugin uniforms, for detecting which ones a shader declares.
 pub const KNOWN_UNIFORMS: &[(&str, &str)] = &[
     ("time", "seconds since plugin start; declaring it forces continuous redraws"),
@@ -354,6 +352,25 @@ pub fn parse(path: &str, source: &str, mtime: u64) -> ShaderInfo {
         }
     }
 
+    // A shader's mathematical constants are not tuning knobs. `PI` is inferred
+    // as a 0–10 slider like any other float, and dragging it quietly breaks the
+    // shader's maths — so they are dropped unless an annotation says otherwise,
+    // which is the author declaring it really is a parameter.
+    let dropped: Vec<String> = info
+        .params
+        .iter()
+        .filter(|p| !p.annotated && is_math_constant(&p.name))
+        .map(|p| p.name.clone())
+        .collect();
+    if !dropped.is_empty() {
+        info.params.retain(|p| p.annotated || !is_math_constant(&p.name));
+        info.notes.push(format!(
+            "{} left alone: a mathematical constant is not a parameter. Annotate it with \
+             // @param if you really want a slider.",
+            dropped.join(", ")
+        ));
+    }
+
     if info.is_animation() && info.duration.is_none() {
         info.notes.push(
             "declares the progress uniform but has no // @duration, so the plugin falls back to \
@@ -363,6 +380,43 @@ pub fn parse(path: &str, source: &str, mtime: u64) -> ShaderInfo {
     }
 
     info
+}
+
+/// Names a shader conventionally gives a mathematical constant.
+///
+/// These are spelled out rather than guessed at from the value, so that what
+/// the app leaves alone is predictable: a `const float SPEED = 3.14159;` is
+/// still yours to drag.
+const MATH_CONSTANTS: &[&str] = &[
+    "pi",
+    "m_pi",
+    "two_pi",
+    "twopi",
+    "half_pi",
+    "halfpi",
+    "inv_pi",
+    "invpi",
+    "tau",
+    "m_tau",
+    "e",
+    "m_e",
+    "phi",
+    "golden",
+    "golden_ratio",
+    "eps",
+    "epsilon",
+    "sqrt2",
+    "sqrt3",
+    "deg2rad",
+    "rad2deg",
+    "degrees_to_radians",
+    "radians_to_degrees",
+];
+
+/// Whether a `const` is named like a mathematical constant.
+fn is_math_constant(name: &str) -> bool {
+    let lower = name.trim_matches('_').to_ascii_lowercase();
+    MATH_CONSTANTS.contains(&lower.as_str())
 }
 
 /// Turn `reading_mode` into `Reading mode`.
@@ -649,38 +703,37 @@ fn nice_step(min: f32, max: f32) -> f32 {
     snapped * mag
 }
 
+/// Format one float as a GLSL literal.
+///
+/// Uses the shortest decimal that reads back as the same `f32`, rather than a
+/// fixed number of decimal places: a slider whose step is finer than a
+/// thousandth — which [`nice_step`] will happily produce for a narrow range —
+/// would otherwise have its value quantised away on the trip through the file.
+fn glsl_float(v: f32) -> String {
+    let s = format!("{v}");
+    // A GLSL float literal wants a decimal point, or it is an int. Infinities
+    // and NaN have no literal at all, so they are left as-is to be rejected on
+    // the way back in rather than written as something that looks valid.
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Render a value back as a GLSL literal of the given type.
 pub fn render_literal(ty: &str, value: &ParamValue) -> String {
     match ty {
         "bool" => if value.first() != 0.0 { "true" } else { "false" }.to_string(),
         "int" => format!("{}", value.first().round() as i64),
-        "float" => {
-            let s = trim_float(value.first());
-            // A GLSL float literal wants a decimal point, or it is an int.
-            if s.contains('.') || s.contains('e') {
-                s
-            } else {
-                format!("{s}.0")
-            }
-        }
+        "float" => glsl_float(value.first()),
         t if t.starts_with("ivec") => {
             let comps: Vec<String> =
                 value.components().iter().map(|c| format!("{}", c.round() as i64)).collect();
             format!("{t}({})", comps.join(", "))
         }
         t => {
-            let comps: Vec<String> = value
-                .components()
-                .iter()
-                .map(|c| {
-                    let s = trim_float(*c);
-                    if s.contains('.') || s.contains('e') {
-                        s
-                    } else {
-                        format!("{s}.0")
-                    }
-                })
-                .collect();
+            let comps: Vec<String> = value.components().iter().map(|c| glsl_float(*c)).collect();
             format!("{t}({})", comps.join(", "))
         }
     }
@@ -846,6 +899,59 @@ void main() {
             render_literal("vec3", &ParamValue::Vector(vec![0.0, 0.5, 1.0])),
             "vec3(0.0, 0.5, 1.0)"
         );
+    }
+
+    #[test]
+    fn a_value_finer_than_a_thousandth_survives_the_round_trip() {
+        // nice_step gives a range of 0–0.05 a step of 0.0005, so rendering at
+        // three decimal places would quantise most of that slider away.
+        for v in [0.0005f32, 0.00025, 0.12345, 1.0e-6, 123.456_79] {
+            let rendered = render_literal("float", &ParamValue::Scalar(v));
+            let back = parse_literal("float", &rendered).unwrap();
+            assert_eq!(back, ParamValue::Scalar(v), "{v} rendered as {rendered}");
+        }
+    }
+
+    #[test]
+    fn vector_components_keep_their_precision_too() {
+        let v = ParamValue::Vector(vec![0.0001, -0.00025, 0.5]);
+        let rendered = render_literal("vec3", &v);
+        assert_eq!(parse_literal("vec3", &rendered).unwrap(), v, "{rendered}");
+    }
+
+    #[test]
+    fn mathematical_constants_are_not_offered_as_sliders() {
+        // pulse.glsl in the wild declares exactly this and nothing else, so its
+        // only "parameter" was the one you must not touch.
+        let src = "uniform float progress;\n// @duration 0.35\nconst float PI = 3.14159265;\n";
+        let i = parse("/s/pulse.glsl", src, 0);
+        assert!(i.params.is_empty(), "{:?}", i.params);
+        assert!(i.notes.iter().any(|n| n.contains("PI")), "{:?}", i.notes);
+    }
+
+    #[test]
+    fn the_usual_spellings_are_all_caught() {
+        let src =
+            "const float TAU = 6.28;\nconst float M_PI = 3.14;\nconst float EPSILON = 1e-6;\n\
+                   const float _PI_ = 3.14;\nconst float golden = 1.618;\n";
+        assert!(parse("/s/x.glsl", src, 0).params.is_empty());
+    }
+
+    #[test]
+    fn an_annotation_overrides_the_constant_check() {
+        // If the author says it is a parameter, it is one.
+        let src = "// @param 3.0 3.3 0.01 \"Pi, slightly wrong\"\nconst float PI = 3.14159;\n";
+        let i = parse("/s/x.glsl", src, 0);
+        assert_eq!(i.params.len(), 1);
+        assert_eq!(i.params[0].label, "Pi, slightly wrong");
+    }
+
+    #[test]
+    fn a_constant_shaped_value_under_another_name_is_still_editable() {
+        let src = "const float SPEED = 3.14159;\n";
+        let i = parse("/s/x.glsl", src, 0);
+        assert_eq!(i.params.len(), 1);
+        assert_eq!(i.params[0].name, "SPEED");
     }
 
     #[test]

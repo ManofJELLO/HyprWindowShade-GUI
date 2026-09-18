@@ -16,6 +16,7 @@ QtObject {
     // singletons depend on each other, which QML refuses to load.
     property string rawState: "{}"
     property var backend: null
+    property var confirmDialog: null
 
     readonly property var state: {
         try {
@@ -75,6 +76,23 @@ QtObject {
     function refresh() {
         if (app.backend)
             app.backend.refresh()
+    }
+
+    // Asks the compositor what is on screen without blocking the interface.
+    // The answer lands in `state` when it arrives.
+    function refreshLive() {
+        if (app.backend)
+            app.backend.refreshLive()
+    }
+
+    // Ask before doing something that rewrites a file or throws work away.
+    // With no dialog wired up the action still happens, so a page is never
+    // left with a button that quietly does nothing.
+    function confirm(heading, body, acceptText, danger, onAccept) {
+        if (app.confirmDialog)
+            app.confirmDialog.ask(heading, body, acceptText, danger, onAccept)
+        else
+            onAccept()
     }
 
     // --- lookups ------------------------------------------------------------

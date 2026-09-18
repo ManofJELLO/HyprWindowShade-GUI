@@ -81,10 +81,12 @@ Item {
                 HoverHandler {
                     id: guessHover
                 }
-                ToolTip.visible: guessHover.hovered
-                ToolTip.text: "No // @param annotation, so the range was inferred from the " +
-                              "current value. Add one to set a real range and label."
-                ToolTip.delay: 400
+                Tip {
+                    visible: guessHover.hovered
+                    delay: 400
+                    text: "No // @param annotation, so the range was inferred from the " +
+                          "current value. Add one to set a real range and label."
+                }
             }
         }
 

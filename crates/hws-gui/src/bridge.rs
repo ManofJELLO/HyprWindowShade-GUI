@@ -57,14 +57,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refresh"]
         fn refresh(self: Pin<&mut Backend>);
+
+        /// Ask the compositor what is on screen, on a background thread.
+        ///
+        /// Returns immediately; `stateJson` updates when the answer arrives.
+        #[qinvokable]
+        #[cxx_name = "refreshLive"]
+        fn refresh_live(self: Pin<&mut Backend>);
     }
 
     impl cxx_qt::Initialize for Backend {}
+
+    // Lets `qt_thread()` hand a background thread a way back onto the Qt event
+    // loop, which is the only thread allowed to touch the session or the
+    // properties QML is bound to.
+    impl cxx_qt::Threading for Backend {}
 }
 
 use core::pin::Pin;
 
-use cxx_qt::CxxQtType;
+use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use hws_core::Session;
 use serde_json::{json, Value};
@@ -79,6 +91,11 @@ pub struct BackendRust {
     shot_dir: QString,
     ready: bool,
     session: Option<Session>,
+    /// True while a background probe is out.
+    ///
+    /// The timer fires every five seconds; if `hyprctl` ever takes longer than
+    /// that, threads would pile up behind it.
+    probing: bool,
 }
 
 impl cxx_qt::Initialize for qobject::Backend {
@@ -88,7 +105,7 @@ impl cxx_qt::Initialize for qobject::Backend {
         self.as_mut().set_shot_dir(QString::from(&shot_dir));
 
         let session = Session::load();
-        let problems = session.problems.clone();
+        let problems = session.messages();
         self.as_mut().rust_mut().session = Some(session);
         self.as_mut().push_state();
         self.as_mut().set_ready(true);
@@ -158,12 +175,37 @@ impl qobject::Backend {
     }
 
     /// Re-read the shader directory and the compositor state.
+    ///
+    /// The directory scan is local and quick, so it happens here; the
+    /// compositor probe is not, so it goes to a thread.
     pub fn refresh(mut self: Pin<&mut Self>) {
         if let Some(session) = self.as_mut().rust_mut().session.as_mut() {
             session.rescan_shaders();
-            session.refresh_live();
         }
-        self.push_state();
+        self.as_mut().push_state();
+        self.refresh_live();
+    }
+
+    /// Probe the compositor on a background thread.
+    pub fn refresh_live(mut self: Pin<&mut Self>) {
+        if self.as_ref().rust().probing {
+            return;
+        }
+        self.as_mut().rust_mut().probing = true;
+
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let live = hws_core::session::probe_live();
+            // The queue fails only if the QObject is already gone, which on
+            // the way out is exactly the right time to drop the answer.
+            let _ = thread.queue(move |mut backend| {
+                backend.as_mut().rust_mut().probing = false;
+                if let Some(session) = backend.as_mut().rust_mut().session.as_mut() {
+                    session.set_live(live);
+                }
+                backend.push_state();
+            });
+        });
     }
 
     /// Serialise the session and hand it to QML.

@@ -2,6 +2,10 @@ import QtQuick
 import dev.hyprwindowshade.gui
 
 // A labelled row: caption on the left, one control on the right.
+//
+// The hint runs the full width underneath rather than sharing the caption
+// column. A sentence of explanation squeezed into 150px becomes eight very
+// short lines while the rest of the row sits empty.
 Item {
     id: row
 
@@ -10,42 +14,54 @@ Item {
     property int labelWidth: 150
     default property alias control: holder.data
 
-    implicitHeight: Math.max(Theme.rowHeight, holder.childrenRect.height, caption.implicitHeight)
+    implicitHeight: head.height + (hintText.visible ? hintText.implicitHeight + 3 : 0)
     implicitWidth: labelWidth + Theme.gap + holder.childrenRect.width
 
-    Column {
-        id: caption
-        width: row.labelWidth
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.topMargin: 7
-        spacing: 1
+    Item {
+        id: head
+        anchors {
+            left: parent.left
+            right: parent.right
+            top: parent.top
+        }
+        height: Math.max(Theme.rowHeight, holder.childrenRect.height, caption.implicitHeight + 7)
 
         Text {
+            id: caption
             text: row.label
-            width: parent.width
+            width: row.labelWidth
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.topMargin: 7
             wrapMode: Text.WordWrap
             color: Theme.fgDim
             font.pixelSize: Theme.fontSize
         }
-        Text {
-            text: row.hint
-            visible: text !== ""
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: Theme.muted
-            font.pixelSize: Theme.fontSizeSmall
+
+        Item {
+            id: holder
+            anchors {
+                left: caption.right
+                leftMargin: Theme.gap
+                right: parent.right
+                top: parent.top
+            }
+            implicitHeight: childrenRect.height
         }
     }
 
-    Item {
-        id: holder
+    Text {
+        id: hintText
+        text: row.hint
+        visible: text !== ""
         anchors {
-            left: caption.right
-            leftMargin: Theme.gap
+            left: parent.left
             right: parent.right
-            top: parent.top
+            top: head.bottom
+            topMargin: 3
         }
-        implicitHeight: childrenRect.height
+        wrapMode: Text.WordWrap
+        color: Theme.muted
+        font.pixelSize: Theme.fontSizeSmall
     }
 }

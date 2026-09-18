@@ -114,8 +114,10 @@ pub fn remove(document: &str) -> Result<String> {
     match split(document)? {
         Some(s) => {
             let mut before = s.before.to_string();
-            // Collapse the blank line we inserted when appending.
-            while before.ends_with("\n\n") {
+            // Take back exactly the one blank line `splice` inserted when it
+            // appended the block. Anything beyond that is the user's own
+            // spacing, and removing the block is not licence to reflow it.
+            if before.ends_with("\n\n") {
                 before.pop();
             }
             Ok(format!("{}{}", before, s.after))
@@ -176,6 +178,22 @@ mod tests {
         let doc = "before\nstuff\n";
         let with = splice(doc, "body").unwrap();
         assert_eq!(remove(&with).unwrap(), doc);
+    }
+
+    #[test]
+    fn remove_keeps_blank_lines_the_user_wrote() {
+        // Deliberate spacing above the block is the user's, not ours.
+        let doc = "before\n\n\n";
+        let with = splice(doc, "body").unwrap();
+        assert_eq!(remove(&with).unwrap(), doc);
+    }
+
+    #[test]
+    fn remove_restores_a_hand_placed_block_without_eating_the_file() {
+        let doc = format!("a\n\n\n\n{BEGIN}\nbody\n{END}\nb\n");
+        // One blank line goes, because that is the one splice would have added;
+        // the rest of the run stays.
+        assert_eq!(remove(&doc).unwrap(), "a\n\n\nb\n");
     }
 
     #[test]

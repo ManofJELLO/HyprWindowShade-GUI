@@ -78,7 +78,13 @@ Item {
                         text: "Discard changes"
                         enabled: App.dirty
                         tooltip: "Re-read the file and throw away anything unsaved"
-                        onClicked: App.run("config.reload", {})
+                        onClicked: App.confirm(
+                            "Discard unsaved changes?",
+                            "Your rules, layers and keybinds go back to what is in "
+                            + App.configPathDisplay + " now. There is no backup of "
+                            + "unsaved work, because it was never written.",
+                            "Discard", true,
+                            function () { App.run("config.reload", {}) })
                     }
                     Item {
                         Layout.fillWidth: true
@@ -87,7 +93,14 @@ Item {
                         text: "Remove managed block"
                         danger: true
                         tooltip: "Delete this app's section from the config, leaving the rest alone"
-                        onClicked: App.run("config.removeBlock", {})
+                        onClicked: App.confirm(
+                            "Remove the managed block?",
+                            "This rewrites " + App.configPathDisplay + " now, deleting everything "
+                            + "between the two marker lines. The rest of the file is untouched and "
+                            + "a timestamped backup is taken first, but the app will no longer "
+                            + "know about your rules.",
+                            "Remove it", true,
+                            function () { App.run("config.removeBlock", {}) })
                     }
                 }
             }

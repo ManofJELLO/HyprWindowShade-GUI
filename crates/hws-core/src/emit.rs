@@ -127,11 +127,11 @@ fn emit_rules(out: &mut String, config: &Config, ctx: &Ctx) {
         // several tags becomes several calls sharing a match. They stack, which
         // is the documented behaviour.
         let multi = rule.tags.len() > 1;
-        for (i, tag) in rule.tags.iter().enumerate() {
+        for tag in &rule.tags {
             out.push('\n');
             out.push_str("hl.window_rule({\n");
 
-            let name = rule_name(rule, tag, i, multi);
+            let name = rule_name(rule, tag, multi);
             if !name.is_empty() {
                 out.push_str(&format!("    name  = {},\n", lua_quote(&name)));
             }
@@ -142,20 +142,17 @@ fn emit_rules(out: &mut String, config: &Config, ctx: &Ctx) {
     }
 }
 
-fn rule_name(rule: &WindowRule, tag: &Tag, index: usize, multi: bool) -> String {
+fn rule_name(rule: &WindowRule, tag: &Tag, multi: bool) -> String {
     let base = if rule.name.trim().is_empty() {
         format!("hws-{}", rule.id)
     } else {
         rule.name.trim().to_string()
     };
     if multi {
-        let suffix = tag.slot.key().strip_prefix("shader_").unwrap_or("base");
-        // Index keeps the name unique even if two tags somehow share a slot.
-        if index == 0 && tag.slot.key() == "shader" {
-            format!("{base}-base")
-        } else {
-            format!("{base}-{suffix}")
-        }
+        // A rule carrying several tags becomes several calls, so each needs its
+        // own name. `shader` has nothing to strip and reads better as "-base".
+        // A slot appears at most once per rule, so these stay unique.
+        format!("{base}-{}", tag.slot.key().strip_prefix("shader_").unwrap_or("base"))
     } else {
         base
     }
