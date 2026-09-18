@@ -1,0 +1,151 @@
+pragma Singleton
+
+import QtQuick
+
+// This file is part of the dev.hyprwindowshade.gui module, so the module's own
+// types (Backend) are available without importing it. Importing it here would
+// make the two singletons depend on each other through the module.
+
+// The parsed application state, plus the handful of helpers every page needs.
+// Nothing here decides anything — the engine does that; this is a view onto it.
+QtObject {
+    id: app
+
+    // Both of these are wired up by Main.qml. The singleton does not reach for
+    // Backend itself: a singleton that imports its own module makes the module's
+    // singletons depend on each other, which QML refuses to load.
+    property string rawState: "{}"
+    property var backend: null
+
+    readonly property var state: {
+        try {
+            return JSON.parse(app.rawState)
+        } catch (e) {
+            return ({})
+        }
+    }
+
+    readonly property bool ready: app.backend ? app.backend.ready : false
+    readonly property bool dirty: state.dirty === true
+
+    readonly property var rules: state.rules || []
+    readonly property var layers: state.layers || []
+    readonly property var binds: state.binds || []
+    readonly property var startup: state.startup || []
+    readonly property var shaders: state.shaders || []
+    readonly property var missingShaders: state.missingShaders || []
+    readonly property var tagCatalog: state.tagCatalog || []
+    readonly property var uniformCatalog: state.uniformCatalog || []
+    readonly property var themes: state.themes || []
+    readonly property var problems: state.problems || []
+    readonly property var settings: state.settings || ({})
+    readonly property var live: state.live || ({})
+
+    readonly property bool hyprlandRunning: live.running === true
+    readonly property bool pluginLoaded: live.pluginLoaded === true
+    readonly property var liveClasses: live.classes || []
+    readonly property var liveNamespaces: live.namespaces || []
+
+    readonly property string configPathDisplay: state.configPathDisplay || ""
+    readonly property string shaderDirDisplay: state.shaderDirDisplay || ""
+    readonly property string appVersion: state.appVersion || ""
+
+    // --- commands -----------------------------------------------------------
+
+    function run(command, payload) {
+        if (!app.backend)
+            return
+        app.backend.run(command, JSON.stringify(payload === undefined ? {} : payload))
+    }
+
+    function query(what, payload) {
+        if (!app.backend)
+            return "{}"
+        return app.backend.query(what, JSON.stringify(payload === undefined ? {} : payload))
+    }
+
+    function queryJson(what, payload) {
+        try {
+            return JSON.parse(query(what, payload))
+        } catch (e) {
+            return ({ error: "the backend returned something unreadable" })
+        }
+    }
+
+    function refresh() {
+        if (app.backend)
+            app.backend.refresh()
+    }
+
+    // --- lookups ------------------------------------------------------------
+
+    function ruleById(id) {
+        for (var i = 0; i < rules.length; ++i)
+            if (rules[i].id === id)
+                return rules[i]
+        return null
+    }
+
+    function layerById(id) {
+        for (var i = 0; i < layers.length; ++i)
+            if (layers[i].id === id)
+                return layers[i]
+        return null
+    }
+
+    function shaderByPath(path) {
+        if (!path)
+            return null
+        for (var i = 0; i < shaders.length; ++i)
+            if (shaders[i].path === path)
+                return shaders[i]
+        return null
+    }
+
+    function tagInfo(key) {
+        for (var i = 0; i < tagCatalog.length; ++i)
+            if (tagCatalog[i].key === key || tagCatalog[i].slot === key)
+                return tagCatalog[i]
+        return null
+    }
+
+    // Tags grouped for the rule editor, in catalog order.
+    readonly property var tagGroups: {
+        var order = []
+        var byGroup = ({})
+        for (var i = 0; i < tagCatalog.length; ++i) {
+            var t = tagCatalog[i]
+            if (byGroup[t.group] === undefined) {
+                byGroup[t.group] = { group: t.group, label: t.groupLabel, tags: [] }
+                order.push(byGroup[t.group])
+            }
+            byGroup[t.group].tags.push(t)
+        }
+        return order
+    }
+
+    // --- formatting ---------------------------------------------------------
+
+    function fileName(path) {
+        if (!path)
+            return ""
+        var parts = String(path).split("/")
+        return parts[parts.length - 1]
+    }
+
+    function seconds(v) {
+        if (v === null || v === undefined)
+            return ""
+        return (Math.round(v * 1000) / 1000) + "s"
+    }
+
+    // A rule's tag for one slot, or null.
+    function tagOf(rule, key) {
+        if (!rule || !rule.tags)
+            return null
+        for (var i = 0; i < rule.tags.length; ++i)
+            if (rule.tags[i].key === key)
+                return rule.tags[i]
+        return null
+    }
+}

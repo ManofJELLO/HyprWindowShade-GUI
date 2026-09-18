@@ -1,0 +1,341 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import dev.hyprwindowshade.gui
+
+ApplicationWindow {
+    id: window
+
+    width: 1180
+    height: 780
+    minimumWidth: 900
+    minimumHeight: 560
+    visible: true
+    title: "HyprWindowShade" + (App.dirty ? " — unsaved changes" : "")
+    color: Theme.bg
+    opacity: Theme.windowOpacity
+
+    readonly property var pages: [
+        { label: "Rules",    hint: "Windows" },
+        { label: "Shaders",  hint: "Files" },
+        { label: "Layers",   hint: "Bars, launchers" },
+        { label: "Keybinds", hint: "And startup" },
+        { label: "Preview",  hint: "And import" },
+        { label: "Settings", hint: "" }
+    ]
+
+    property int currentPage: 0
+
+    // The two QML singletons are fed from here rather than reading Backend
+    // themselves, which keeps the module free of circular dependencies.
+    Component.onCompleted: {
+        App.backend = Backend
+        window.syncState()
+    }
+
+    function syncState() {
+        App.rawState = Backend.stateJson
+        Theme.rawState = Backend.stateJson
+    }
+
+    Connections {
+        target: Backend
+
+        function onStateJsonChanged() {
+            window.syncState()
+        }
+
+        function onNotify(message, isError) {
+            toast.show(message, isError)
+        }
+    }
+
+    // The compositor's window list changes while the app is open, so the
+    // pickers are refreshed periodically rather than only at startup.
+    Timer {
+        interval: 5000
+        running: true
+        repeat: true
+        onTriggered: App.run("live.refresh", {})
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Save]
+        onActivated: App.run("config.save", {})
+    }
+    Shortcut {
+        sequences: [StandardKey.Refresh]
+        onActivated: App.refresh()
+    }
+
+    // Everything lives inside one item so the whole interface can be captured
+    // as a single image, which is what the screenshot aid below grabs.
+    ColumnLayout {
+        id: shell
+        anchors.fill: parent
+        spacing: 0
+
+    // -----------------------------------------------------------------------
+    // Header
+    // -----------------------------------------------------------------------
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 58
+        implicitHeight: 58
+        color: Theme.bgAlt
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: Theme.border
+        }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Theme.pad
+            anchors.rightMargin: Theme.pad
+            spacing: Theme.gap
+
+            ColumnLayout {
+                spacing: 0
+
+                Text {
+                    text: "HyprWindowShade"
+                    color: Theme.fg
+                    font.pixelSize: Theme.fontSizeTitle
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    text: App.configPathDisplay
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeSmall
+                    font.family: Theme.monoFamily
+                }
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            // Live status.
+            Row {
+                spacing: Theme.gapSmall
+
+                Badge {
+                    text: App.hyprlandRunning ? "Hyprland up" : "Hyprland not running"
+                    tint: App.hyprlandRunning ? Theme.ok : Theme.muted
+                }
+                Badge {
+                    visible: App.hyprlandRunning
+                    text: App.pluginLoaded ? "plugin loaded" : "plugin not loaded"
+                    tint: App.pluginLoaded ? Theme.ok : Theme.warn
+                }
+                Badge {
+                    visible: App.dirty
+                    text: "unsaved"
+                    tint: Theme.warn
+                }
+            }
+
+            PillButton {
+                text: "Refresh"
+                tooltip: "Re-read the shader folder and ask Hyprland what is on screen"
+                onClicked: App.refresh()
+            }
+
+            PillButton {
+                text: "Save"
+                primary: true
+                enabled: App.dirty
+                tooltip: "Write the managed block into your Hyprland config"
+                onClicked: App.run("config.save", {})
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Body
+    // -----------------------------------------------------------------------
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        spacing: 0
+
+        // --- navigation ---
+        Rectangle {
+            Layout.preferredWidth: Theme.sidebarWidth
+            Layout.fillHeight: true
+            color: Theme.bgAlt
+
+            Rectangle {
+                anchors.right: parent.right
+                width: 1
+                height: parent.height
+                color: Theme.border
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Theme.gap
+                spacing: 2
+
+                Repeater {
+                    model: window.pages
+
+                    Rectangle {
+                        id: navItem
+
+                        required property var modelData
+                        required property int index
+
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 44
+                        radius: Theme.radiusSmall
+                        color: window.currentPage === navItem.index
+                               ? Theme.selection
+                               : (navHover.hovered ? Theme.surfaceHi : "transparent")
+
+                        HoverHandler {
+                            id: navHover
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: window.currentPage = navItem.index
+                        }
+
+                        Rectangle {
+                            width: 3
+                            height: 22
+                            radius: 2
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Theme.accent
+                            visible: window.currentPage === navItem.index
+                        }
+
+                        Column {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: Theme.pad
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.gapSmall
+                            spacing: 0
+
+                            Text {
+                                text: navItem.modelData.label
+                                color: window.currentPage === navItem.index ? Theme.fg : Theme.fgDim
+                                font.pixelSize: Theme.fontSize
+                                font.weight: window.currentPage === navItem.index
+                                             ? Font.DemiBold : Font.Normal
+                            }
+                            Text {
+                                text: navItem.modelData.hint
+                                visible: text !== ""
+                                color: Theme.muted
+                                font.pixelSize: Theme.fontSizeSmall
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+                        }
+                    }
+                }
+
+                Item {
+                    Layout.fillHeight: true
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: App.shaders.length + " shader" + (App.shaders.length === 1 ? "" : "s")
+                          + "  ·  " + App.rules.length + " rule"
+                          + (App.rules.length === 1 ? "" : "s")
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeSmall
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: Theme.name
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeSmall
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        // --- pages ---
+        StackLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: window.currentPage
+
+            Item {
+                RulesPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
+                ShadersPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
+                LayersPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
+                BindsPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
+                PreviewPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
+                SettingsPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+        }
+    }
+
+    }
+
+    Toast {
+        id: toast
+        anchors.fill: parent
+    }
+
+    // Development aid: with HWS_SHOT_DIR set, render each page to a PNG there
+    // and quit. Lets the layout be checked without a compositor.
+    Loader {
+        active: Backend.shotDir !== ""
+        sourceComponent: Timer {
+            interval: 700
+            running: true
+            repeat: true
+            onTriggered: {
+                shell.grabToImage(function (result) {
+                    result.saveToFile(Backend.shotDir + "/" + window.currentPage + "-"
+                                      + window.pages[window.currentPage].label.toLowerCase()
+                                      + ".png")
+                    if (window.currentPage + 1 < window.pages.length)
+                        window.currentPage = window.currentPage + 1
+                    else
+                        Qt.quit()
+                })
+            }
+        }
+    }
+}

@@ -1,0 +1,15 @@
+# Gruvbox light, soft background.
+
+name = "Gruvbox Light Soft"
+base = "gruvbox-light"
+dark = false
+opacity = 1.0
+
+[colors]
+bg         = "#f2e5bc"
+bg_alt     = "#ebdbb2"
+surface    = "#fbf1c7"
+surface_hi = "#ebdbb2"
+border     = "#d5c4a1"
+accent     = "#427b58"
+accent_alt = "#8f3f71"
