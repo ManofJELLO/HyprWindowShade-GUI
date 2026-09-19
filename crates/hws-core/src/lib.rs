@@ -29,6 +29,7 @@ pub mod hyprpm;
 pub mod import;
 pub mod model;
 pub mod paths;
+pub mod preview;
 pub mod session;
 pub mod settings;
 pub mod shader;

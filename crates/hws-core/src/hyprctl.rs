@@ -183,6 +183,99 @@ pub fn plugin_loaded() -> Result<bool> {
     Ok(json.contains("HyprWindowShade"))
 }
 
+// ---------------------------------------------------------------------------
+// Instances, for the preview
+// ---------------------------------------------------------------------------
+
+/// One running Hyprland, as `hyprctl instances -j` reports it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Instance {
+    /// The instance signature, which `-i` takes.
+    pub instance: String,
+    /// The Wayland socket clients connect to.
+    pub wl_socket: String,
+    /// The compositor's process id.
+    #[serde(default)]
+    pub pid: i64,
+}
+
+/// Every Hyprland instance running for this user.
+pub fn instances() -> Result<Vec<Instance>> {
+    let out = run(&["instances", "-j"])?;
+    serde_json::from_str(&out)
+        .map_err(|e| Error::Hyprctl(format!("could not read the instance list: {e}")))
+}
+
+/// Run a command against one instance rather than the session's own.
+///
+/// The preview drives a second compositor, and every call meant for it has to
+/// say so — otherwise it lands on the user's real desktop.
+pub fn on_instance(signature: &str, args: &[&str]) -> Result<String> {
+    let mut full = vec!["-i", signature];
+    full.extend_from_slice(args);
+    run(&full)
+}
+
+// ---------------------------------------------------------------------------
+// Options, for the preview
+// ---------------------------------------------------------------------------
+
+/// One option, as `hyprctl getoption -j` reports it.
+///
+/// Which field is populated depends on the option's type, so all of them are
+/// optional and the caller asks for the one it wants.
+#[derive(Debug, Default, Deserialize)]
+struct RawOption {
+    #[serde(default)]
+    int: Option<i64>,
+    #[serde(default)]
+    float: Option<f64>,
+    #[serde(default)]
+    bool: Option<bool>,
+    /// False when the option name was not recognised at all.
+    #[serde(default)]
+    set: bool,
+}
+
+fn option(name: &str) -> Option<RawOption> {
+    let out = run(&["getoption", name, "-j"]).ok()?;
+    let parsed: RawOption = serde_json::from_str(&out).ok()?;
+    parsed.set.then_some(parsed)
+}
+
+/// An integer option, or `None` when it is missing or another type.
+///
+/// Hyprland reports a `bool` option as an int in some versions, so a boolean
+/// read through here still answers sensibly.
+pub fn option_int(name: &str) -> Option<i64> {
+    let o = option(name)?;
+    o.int.or_else(|| o.bool.map(i64::from))
+}
+
+/// A float option, or `None`.
+pub fn option_float(name: &str) -> Option<f32> {
+    let o = option(name)?;
+    o.float.map(|v| v as f32).or_else(|| o.int.map(|v| v as f32))
+}
+
+/// A boolean option, or `None`.
+pub fn option_bool(name: &str) -> Option<bool> {
+    let o = option(name)?;
+    o.bool.or_else(|| o.int.map(|v| v != 0))
+}
+
+/// Every animation leaf and easing curve the compositor is running with.
+///
+/// `hyprctl animations -j` answers with a two-element array: the leaves, then
+/// the curves.
+pub fn animations(
+) -> Result<(Vec<crate::preview::look::Animation>, Vec<crate::preview::look::Curve>)> {
+    let out = run(&["animations", "-j"])?;
+    let (animations, curves) = serde_json::from_str(&out)
+        .map_err(|e| Error::Hyprctl(format!("could not read the animation list: {e}")))?;
+    Ok((animations, curves))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

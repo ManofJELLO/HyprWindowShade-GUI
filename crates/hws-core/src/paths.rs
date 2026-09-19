@@ -42,6 +42,21 @@ pub fn backup_dir() -> PathBuf {
     app_config_dir().join("backups")
 }
 
+/// Find an executable on PATH.
+///
+/// Used to decide whether an optional helper — a terminal emulator, a wallpaper
+/// tool — is available before offering something that depends on it.
+pub fn which(program: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
+        let candidate = dir.join(program);
+        let executable = std::fs::metadata(&candidate)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        executable.then_some(candidate)
+    })
+}
+
 /// Expand a leading `~` and return an absolute path.
 pub fn expand(path: &str) -> PathBuf {
     let path = path.trim();

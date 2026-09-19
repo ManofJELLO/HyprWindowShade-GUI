@@ -39,6 +39,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
+use crate::paths::which;
 
 // ---------------------------------------------------------------------------
 // Operations
@@ -783,17 +784,6 @@ fn nanos() -> u128 {
 /// The pid a job's shell wrote for itself, if it got that far.
 fn read_pid(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// Find an executable on PATH.
-fn which(program: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
-        let candidate = dir.join(program);
-        let executable = std::fs::metadata(&candidate)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
-        executable.then_some(candidate)
-    })
 }
 
 /// Remove terminal escape sequences from text.

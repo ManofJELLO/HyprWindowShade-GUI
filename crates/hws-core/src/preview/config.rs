@@ -1,0 +1,373 @@
+//! The Lua config the preview instance runs on.
+//!
+//! Lua, not `.conf`, and not by preference: in Hyprland 0.56 a `.conf` window
+//! rule rejects `class:` matchers outright — every spelling comes back as
+//! "invalid field type class" — while `hl.window_rule` applies the plugin's tag
+//! first time. That is the same call [`crate::emit`] writes into the user's own
+//! config, so the preview and the real thing agree by construction.
+//!
+//! Nothing here touches the user's files. The config, the shader it points at
+//! and the backdrop all live in a private runtime directory, which is what lets
+//! the preview show staged edits that have never been saved.
+
+use std::path::Path;
+
+use crate::model::{trim_float, TagSlot};
+use crate::preview::look::Look;
+
+/// Everything the generated config needs to know.
+#[derive(Debug, Clone)]
+pub struct PreviewConfig {
+    /// The temporary `.glsl` the rule points at.
+    pub shader: String,
+    /// Which of the plugin's tags to apply it through.
+    pub slot: TagSlot,
+    /// Class pattern the rule matches.
+    ///
+    /// `.*` by default, and that is not laziness: a preview instance holds
+    /// exactly one window, so matching everything works whichever terminal is
+    /// installed and whatever class it reports — kitty says `kitty`, ghostty
+    /// says `com.mitchellh.ghostty`, and the backdrop is a layer surface, not
+    /// a window, so it is not affected either way.
+    pub demo_class: String,
+    /// The plugin `.so` to load once the session is up.
+    pub plugin_so: String,
+    /// Background colour behind everything, as `0xRRGGBB`.
+    pub background: u32,
+    /// Pane size in pixels, which the preview's output is fixed to.
+    pub size: (u32, u32),
+    /// How the compositor should draw.
+    pub look: Look,
+}
+
+/// Quote a string for Lua, the way [`crate::emit`] does.
+fn lua_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
+}
+
+/// Render the whole config.
+pub fn render(cfg: &PreviewConfig) -> String {
+    let mut out = String::new();
+
+    out.push_str("-- hyprwindowshade-gui preview instance.\n");
+    out.push_str("--\n");
+    out.push_str("-- Generated for one preview and deleted with it. This is not your config,\n");
+    out.push_str("-- and nothing here is written back to it: the shader below is a temporary\n");
+    out.push_str("-- copy carrying whatever values are staged in the app right now.\n\n");
+
+    emit_monitor(&mut out, cfg);
+    emit_curves(&mut out, cfg);
+    emit_animations(&mut out, cfg);
+    emit_look(&mut out, cfg);
+    emit_rule(&mut out, cfg);
+    emit_startup(&mut out, cfg);
+
+    out
+}
+
+/// Fix every output to the pane's size.
+///
+/// A catch-all rule rather than one naming the headless output, because it has
+/// to be in force *before* that output exists: the preview creates it after the
+/// compositor is already up, and a `hyprctl keyword monitor` aimed at it then
+/// is accepted and quietly ignored. Declared here it simply applies on arrival.
+/// The nested instance's own backed output is briefly caught by the same rule,
+/// which only makes the window that is about to be removed smaller. `auto`
+/// placement rather than a fixed origin, because for the moment both outputs
+/// exist a shared origin is an overlapping layout — and Hyprland says so in a
+/// banner across the preview.
+fn emit_monitor(out: &mut String, cfg: &PreviewConfig) {
+    let (w, h) = cfg.size;
+    out.push_str(&format!(
+        "hl.monitor({{ output = \"\", mode = \"{w}x{h}@60\", position = \"auto\", scale = 1 }})\n\n"
+    ));
+}
+
+fn emit_curves(out: &mut String, cfg: &PreviewConfig) {
+    if cfg.look.curves.is_empty() {
+        return;
+    }
+    out.push_str("-- Easing curves, copied from the running compositor.\n");
+    for c in &cfg.look.curves {
+        out.push_str(&format!(
+            "hl.curve({}, {{ type = \"bezier\", points = {{ {{{}, {}}}, {{{}, {}}} }} }})\n",
+            lua_quote(&c.name),
+            trim_float(c.x0),
+            trim_float(c.y0),
+            trim_float(c.x1),
+            trim_float(c.y1),
+        ));
+    }
+    out.push('\n');
+}
+
+fn emit_animations(out: &mut String, cfg: &PreviewConfig) {
+    if cfg.look.animation_leaves.is_empty() {
+        return;
+    }
+    out.push_str("-- The animation leaves you have overridden. An open or close shader runs\n");
+    out.push_str("-- alongside these, so a preview without them is not the same effect.\n");
+    for a in &cfg.look.animation_leaves {
+        out.push_str(&format!(
+            "hl.animation({{ leaf = {}, enabled = {}, speed = {}",
+            lua_quote(&a.name),
+            a.enabled,
+            trim_float(a.speed),
+        ));
+        if !a.bezier.is_empty() {
+            out.push_str(&format!(", bezier = {}", lua_quote(&a.bezier)));
+        }
+        if !a.style.is_empty() {
+            out.push_str(&format!(", style = {}", lua_quote(&a.style)));
+        }
+        out.push_str(" })\n");
+    }
+    out.push('\n');
+}
+
+fn emit_look(out: &mut String, cfg: &PreviewConfig) {
+    let l = &cfg.look;
+    out.push_str("hl.config({\n");
+    out.push_str("    general = {\n");
+    out.push_str(&format!("        gaps_in     = {},\n", l.gaps_in));
+    // Not the user's gaps_out: this is a small pane, not a monitor, and their
+    // desktop margins would push the window off it.
+    out.push_str("        gaps_out    = 14,\n");
+    out.push_str(&format!("        border_size = {},\n", l.border_size));
+    out.push_str("    },\n");
+    out.push_str("    decoration = {\n");
+    out.push_str(&format!("        rounding         = {},\n", l.rounding));
+    out.push_str(&format!("        active_opacity   = {},\n", trim_float(l.active_opacity)));
+    out.push_str(&format!("        inactive_opacity = {},\n", trim_float(l.inactive_opacity)));
+    out.push_str(&format!("        blur = {{ enabled = {} }},\n", l.blur));
+    out.push_str("    },\n");
+    out.push_str(&format!("    animations = {{ enabled = {} }},\n", l.animations));
+    out.push_str("    misc = {\n");
+    out.push_str("        disable_hyprland_logo    = true,\n");
+    out.push_str("        disable_splash_rendering = true,\n");
+    out.push_str("        force_default_wallpaper  = 0,\n");
+    // Every one of these is a banner Hyprland would otherwise draw across the
+    // top of the preview — over the very window the user is trying to look at.
+    // The watchdog one fires because this instance is started directly rather
+    // than through start-hyprland, which is exactly what a preview should do.
+    out.push_str("        disable_watchdog_warning       = true,\n");
+    out.push_str("        disable_xdg_env_checks         = true,\n");
+    out.push_str("        disable_hyprland_guiutils_check = true,\n");
+    out.push_str("        disable_scale_notification     = true,\n");
+    out.push_str("        disable_autoreload             = true,\n");
+    out.push_str(&format!("        background_color         = 0x{:06x},\n", cfg.background));
+    out.push_str("    },\n");
+    out.push_str("    input = {\n");
+    // The preview has no one typing into it, and a follow-mouse instance that
+    // reacts to the host's pointer would flicker focus mid-capture.
+    out.push_str("        follow_mouse = 0,\n");
+    out.push_str("    },\n");
+    out.push_str("})\n\n");
+}
+
+fn emit_rule(out: &mut String, cfg: &PreviewConfig) {
+    out.push_str("-- The shader under test. The plugin reloads a shader when its mtime\n");
+    out.push_str("-- changes, so rewriting the file below is what makes a slider live.\n");
+    out.push_str("hl.window_rule({\n");
+    out.push_str("    name  = \"hws-preview\",\n");
+    out.push_str(&format!("    match = {{ class = {} }},\n", lua_quote(&cfg.demo_class)));
+    out.push_str(&format!(
+        "    tag   = {},\n",
+        lua_quote(&format!("+{}:{}", cfg.slot.info().key, cfg.shader))
+    ));
+    out.push_str("})\n\n");
+}
+
+fn emit_startup(out: &mut String, cfg: &PreviewConfig) {
+    out.push_str("hl.on(\"hyprland.start\", function()\n");
+
+    // Loaded here rather than at parse time for the same reason the app's own
+    // generated block does it: a plugin that fails to load costs one preview,
+    // not the session.
+    out.push_str(&format!(
+        "    hl.exec_cmd({})\n",
+        lua_quote(&format!("hyprctl plugin load {}", cfg.plugin_so))
+    ));
+    out.push_str("end)\n");
+}
+
+/// Which tag a shader should be previewed through.
+///
+/// A shader that drives itself from `progress` only exists during an open or a
+/// close, so previewing it as a steady `shader` would show a still frame of
+/// something that is entirely motion. Anything else is a continuous effect and
+/// belongs on the plain tag, where it is visible the whole time.
+pub fn slot_for(is_animation: bool, closing: bool) -> TagSlot {
+    match (is_animation, closing) {
+        (false, _) => TagSlot::Shader,
+        (true, false) => TagSlot::Open,
+        (true, true) => TagSlot::Close,
+    }
+}
+
+/// Where the preview's private files live.
+pub fn dir() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("hyprwindowshade-gui").join("preview")
+}
+
+/// The path the temporary copy of a shader is written to.
+///
+/// Named after the original so the plugin's own log lines, and any error it
+/// reports, still say which shader the user is looking at.
+pub fn shader_path(original: &Path) -> std::path::PathBuf {
+    let name = original.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "preview".into());
+    dir().join(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preview::look::{Animation, Curve};
+
+    fn config() -> PreviewConfig {
+        PreviewConfig {
+            shader: "/run/user/1000/hyprwindowshade-gui/preview/dim.glsl".into(),
+            slot: TagSlot::Shader,
+            demo_class: "kitty".into(),
+            plugin_so: "/var/cache/hyprpm/me/HyprWindowShade/HyprWindowShade.so".into(),
+            background: 0x1e1e2e,
+            size: (760, 480),
+            look: Look::default(),
+        }
+    }
+
+    #[test]
+    fn the_rule_carries_the_tag_the_plugin_expects() {
+        let out = render(&config());
+        assert!(
+            out.contains(
+                r#"tag   = "+shader:/run/user/1000/hyprwindowshade-gui/preview/dim.glsl","#
+            ),
+            "{out}"
+        );
+        assert!(out.contains(r#"match = { class = "kitty" },"#));
+    }
+
+    #[test]
+    fn an_animation_shader_is_previewed_through_the_open_tag() {
+        let mut cfg = config();
+        cfg.slot = slot_for(true, false);
+        assert!(render(&cfg).contains("+shader_open:"));
+
+        cfg.slot = slot_for(true, true);
+        assert!(render(&cfg).contains("+shader_close:"));
+
+        cfg.slot = slot_for(false, true);
+        assert!(render(&cfg).contains("+shader:"));
+    }
+
+    #[test]
+    fn the_look_is_carried_over() {
+        let mut cfg = config();
+        cfg.look.rounding = 12;
+        cfg.look.border_size = 3;
+        cfg.look.inactive_opacity = 0.85;
+        cfg.look.blur = false;
+
+        let out = render(&cfg);
+        assert!(out.contains("rounding         = 12,"));
+        assert!(out.contains("border_size = 3,"));
+        assert!(out.contains("inactive_opacity = 0.85,"));
+        assert!(out.contains("blur = { enabled = false },"));
+    }
+
+    #[test]
+    fn curves_and_animations_are_written_in_the_lua_api_shape() {
+        let mut cfg = config();
+        cfg.look.curves =
+            vec![Curve { name: "overshoot".into(), x0: 0.15, y0: 0.67, x1: 0.25, y1: 1.19 }];
+        cfg.look.animation_leaves = vec![Animation {
+            name: "windowsIn".into(),
+            overridden: true,
+            enabled: true,
+            speed: 2.0,
+            bezier: "overshoot".into(),
+            style: "slidefade".into(),
+        }];
+
+        let out = render(&cfg);
+        assert!(
+            out.contains(
+                r#"hl.curve("overshoot", { type = "bezier", points = { {0.15, 0.67}, {0.25, 1.19} } })"#
+            ),
+            "{out}"
+        );
+        assert!(out.contains(
+            r#"hl.animation({ leaf = "windowsIn", enabled = true, speed = 2, bezier = "overshoot", style = "slidefade" })"#
+        ));
+    }
+
+    #[test]
+    fn an_animation_without_a_style_leaves_the_key_out() {
+        let mut cfg = config();
+        cfg.look.animation_leaves = vec![Animation {
+            name: "fadeIn".into(),
+            overridden: true,
+            enabled: true,
+            speed: 1.7,
+            bezier: "linear".into(),
+            style: String::new(),
+        }];
+        let out = render(&cfg);
+        assert!(out.contains(r#"speed = 1.7, bezier = "linear" })"#), "{out}");
+        assert!(!out.contains("style ="));
+    }
+
+    #[test]
+    fn the_output_is_pinned_to_the_pane_size() {
+        let mut cfg = config();
+        cfg.size = (640, 400);
+        assert!(
+            render(&cfg).contains(
+                r#"hl.monitor({ output = "", mode = "640x400@60", position = "auto", scale = 1 })"#
+            ),
+            "the mode has to be declared, not set at runtime"
+        );
+    }
+
+    #[test]
+    fn the_warning_banners_are_turned_off() {
+        // A banner is drawn over the window being previewed, so each of these
+        // is the difference between seeing the shader and seeing a warning.
+        let out = render(&config());
+        for option in [
+            "disable_watchdog_warning",
+            "disable_xdg_env_checks",
+            "disable_hyprland_logo",
+            "disable_splash_rendering",
+        ] {
+            assert!(out.contains(option), "{option} is not disabled");
+        }
+    }
+
+    #[test]
+    fn the_plugin_loads_at_session_start_not_at_parse_time() {
+        let out = render(&config());
+        let start = out.find("hl.on(\"hyprland.start\"").expect("a start handler");
+        let load = out.find("hyprctl plugin load").expect("a load line");
+        assert!(start < load, "the loader must be inside the handler");
+    }
+
+    #[test]
+    fn the_backdrop_is_not_started_from_the_config() {
+        // It is launched against the nested socket once the instance is
+        // headless; see `backdrop::prepare` for why that has to wait.
+        let out = render(&config());
+        assert!(!out.contains("swaybg"), "{out}");
+    }
+
+    #[test]
+    fn a_shader_copy_keeps_the_name_of_the_original() {
+        let p = shader_path(Path::new("/home/me/.config/hypr/shaders/crt_mode.glsl"));
+        assert_eq!(p.file_name().unwrap(), "crt_mode.glsl");
+        assert!(p.starts_with(dir()));
+    }
+}
