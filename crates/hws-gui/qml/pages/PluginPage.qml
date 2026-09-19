@@ -56,7 +56,7 @@ Item {
         App.run("settings.update", { settings: copy })
     }
 
-    function appendLine(line, transient) {
+    function appendLine(line, isTransient) {
         // hyprpm redraws its progress bar with a carriage return. On a
         // terminal that overwrites the line; here it would be hundreds of
         // near-identical rows, so the new frame takes the old one's place.
@@ -65,7 +65,7 @@ Item {
             log.text = cut >= 0 ? log.text.substring(0, cut) : ""
             page.logLines = Math.max(0, page.logLines - 1)
         }
-        page.lastTransient = transient === true
+        page.lastTransient = isTransient === true
 
         log.append(line)
         page.logLines += 1
@@ -94,8 +94,8 @@ Item {
             page.appendLine("── " + label + " ──", false)
         }
 
-        function onHyprpmOutput(line, transient) {
-            page.appendLine(line, transient)
+        function onHyprpmOutput(line, isTransient) {
+            page.appendLine(line, isTransient)
         }
 
         function onHyprpmFinished(ok, message) {
