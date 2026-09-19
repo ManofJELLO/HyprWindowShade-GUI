@@ -18,13 +18,26 @@ ApplicationWindow {
     opacity: Theme.windowOpacity
 
     // Everything in this app styles its own background and contentItem, with
-    // one exception: the scrollbar handles Qt builds inside each ScrollView,
-    // which there is no handle on and which draw from the palette. Setting the
-    // three roles they read, once, here, is less noise than giving eight
-    // ScrollViews an explicit ScrollBar apiece.
+    // two exceptions, both of them things Qt builds for itself where there is
+    // no handle to style: the scrollbar inside each ScrollView, and — since Qt
+    // 6.9 — the cut/copy/paste menu on every text field and text area. Both
+    // draw from the palette, so the roles they read are set once here rather
+    // than by giving eight ScrollViews a ScrollBar apiece and every text
+    // control a menu of its own.
+    //
+    // The menu roles are `window` and `windowText` for the popup itself,
+    // `light` and `midlight` for an item hovered and pressed, `dark` for its
+    // border, `mid` for the separators and `shadow` for the drop shadow.
     palette.mid: Theme.border
-    palette.dark: Theme.muted
+    palette.dark: Theme.border
     palette.text: Theme.fg
+    palette.window: Theme.bgAlt
+    palette.windowText: Theme.fg
+    palette.light: Theme.surfaceHi
+    palette.midlight: Theme.selection
+    palette.shadow: "#000000"
+    palette.highlight: Theme.accent
+    palette.highlightedText: Theme.onAccent
 
     readonly property var pages: [
         { label: "Rules",    hint: "Windows" },
