@@ -36,7 +36,7 @@ Item {
     }
 
     readonly property bool installed: page.entry !== null
-    readonly property bool enabled: page.entry !== null && page.entry.enabled === true
+    readonly property bool pluginEnabled: page.entry !== null && page.entry.enabled === true
     readonly property bool busy: App.hyprpmBusy
 
     // What "run this in a terminal instead" should run.
@@ -145,8 +145,8 @@ Item {
                 }
                 Badge {
                     visible: page.installed
-                    text: page.enabled ? "enabled" : "disabled"
-                    tint: page.enabled ? Theme.ok : Theme.warn
+                    text: page.pluginEnabled ? "enabled" : "disabled"
+                    tint: page.pluginEnabled ? Theme.ok : Theme.warn
                 }
                 Badge {
                     visible: App.hyprlandRunning
@@ -216,11 +216,11 @@ Item {
                 }
 
                 PillButton {
-                    text: page.enabled ? "Disable" : "Enable"
+                    text: page.pluginEnabled ? "Disable" : "Enable"
                     visible: page.installed
                     enabled: page.hyprpmPresent && !page.busy
-                    tooltip: (page.enabled ? "hyprpm disable " : "hyprpm enable ") + page.pluginName
-                    onClicked: App.hyprpm(page.enabled ? "disable" : "enable", page.pluginName)
+                    tooltip: (page.pluginEnabled ? "hyprpm disable " : "hyprpm enable ") + page.pluginName
+                    onClicked: App.hyprpm(page.pluginEnabled ? "disable" : "enable", page.pluginName)
                 }
 
                 PillButton {
