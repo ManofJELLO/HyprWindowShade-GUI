@@ -120,6 +120,44 @@ QtObject {
         }
     }
 
+    // --- preview ------------------------------------------------------------
+    //
+    // A second Hyprland with the plugin loaded into it, rendering a temporary
+    // copy of the shader being edited. Frames come back as a file to point an
+    // Image at, not as data.
+
+    readonly property bool previewBusy: app.backend ? app.backend.previewBusy : false
+    readonly property bool previewRunning: app.backend ? app.backend.previewRunning : false
+    readonly property string previewShader: app.backend ? app.backend.previewShader : ""
+
+    function previewStart(path, width, height) {
+        if (app.backend)
+            app.backend.previewStart(path, Math.round(width), Math.round(height))
+    }
+
+    function previewStop() {
+        if (app.backend)
+            app.backend.previewStop()
+    }
+
+    // Push the staged values into the running preview. Cheap, and a no-op when
+    // nothing is running.
+    function previewUpdate(path) {
+        if (app.backend)
+            app.backend.previewUpdate(path)
+    }
+
+    // { path, n } for a frame, or { error } when there is nothing to grab.
+    function previewFrame() {
+        if (!app.backend)
+            return ({ error: "no backend" })
+        try {
+            return JSON.parse(app.backend.previewFrame())
+        } catch (e) {
+            return ({ error: "unreadable frame" })
+        }
+    }
+
     // Asks the compositor what is on screen without blocking the interface.
     // The answer lands in `state` when it arrives.
     function refreshLive() {

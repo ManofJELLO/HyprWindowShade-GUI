@@ -36,6 +36,8 @@ pub struct PreviewConfig {
     pub background: u32,
     /// Pane size in pixels, which the preview's output is fixed to.
     pub size: (u32, u32),
+    /// The app's own process id, for the watchdog.
+    pub app_pid: u32,
     /// How the compositor should draw.
     pub look: Look,
 }
@@ -188,6 +190,21 @@ fn emit_startup(out: &mut String, cfg: &PreviewConfig) {
         "    hl.exec_cmd({})\n",
         lua_quote(&format!("hyprctl plugin load {}", cfg.plugin_so))
     ));
+
+    // A compositor nobody can see and nobody remembers starting is the worst
+    // thing this feature could leave behind, and the app cannot promise to
+    // clean up after itself — it may be killed, or crash. So the preview
+    // watches the app instead, and shows itself out.
+    out.push_str("\n    -- Outlive nothing: when the app that started this preview is gone,\n");
+    out.push_str("    -- so is the preview.\n");
+    out.push_str(&format!(
+        "    hl.exec_cmd({})\n",
+        lua_quote(&format!(
+            "sh -c 'while kill -0 {} 2>/dev/null; do sleep 2; done; \
+             hyprctl dispatch \"hl.dsp.exit()\"'",
+            cfg.app_pid
+        ))
+    ));
     out.push_str("end)\n");
 }
 
@@ -235,6 +252,7 @@ mod tests {
             plugin_so: "/var/cache/hyprpm/me/HyprWindowShade/HyprWindowShade.so".into(),
             background: 0x1e1e2e,
             size: (760, 480),
+            app_pid: 4321,
             look: Look::default(),
         }
     }
@@ -354,6 +372,13 @@ mod tests {
         let start = out.find("hl.on(\"hyprland.start\"").expect("a start handler");
         let load = out.find("hyprctl plugin load").expect("a load line");
         assert!(start < load, "the loader must be inside the handler");
+    }
+
+    #[test]
+    fn the_preview_stops_itself_when_the_app_is_gone() {
+        let out = render(&config());
+        assert!(out.contains("kill -0 4321"), "{out}");
+        assert!(out.contains(r#"hyprctl dispatch \"hl.dsp.exit()\""#), "{out}");
     }
 
     #[test]

@@ -15,11 +15,12 @@ use crate::model::{
     base_name, Action, Bind, Config, LayerEntry, LoadMode, ShaderRef, StartupAction, Tag, TagGroup,
     TagKind, TagSlot, TagValue, WindowRule, TAGS,
 };
+use crate::preview;
 use crate::settings::Settings;
 use crate::shader::meta::{Param, ParamValue, ShaderInfo, KNOWN_UNIFORMS, MOTION_UNIFORMS};
 use crate::shader::{DraftItem, ShaderDraft};
 use crate::theme::Theme;
-use crate::{block, emit, hyprctl, import, paths, shader, theme};
+use crate::{block, emit, hyprctl, hyprpm, import, paths, shader, theme};
 
 /// Live information about the running compositor.
 #[derive(Debug, Clone, Default)]
@@ -887,6 +888,52 @@ impl Session {
             self.drafts.insert(key, draft);
         }
         Ok(())
+    }
+
+    /// A shader's source with its staged edits applied, without writing them.
+    ///
+    /// This is what the preview renders: the file as it *would* be saved, so a
+    /// slider that has not been committed anywhere is still what you see.
+    pub fn shader_preview_source(&self, path: &str) -> Result<String> {
+        let expanded = paths::expand(path);
+        let src = paths::read_to_string(&expanded)?;
+        match self.draft(&expanded.to_string_lossy()) {
+            Some(draft) => draft.apply(&src),
+            None => Ok(src),
+        }
+    }
+
+    /// Describe a preview of one shader.
+    ///
+    /// The session does not run the preview — that owns child processes and
+    /// outlives any one command — but it is the only thing that knows what
+    /// should be in it.
+    pub fn preview_request(
+        &self,
+        path: &str,
+        size: (u32, u32),
+        hold_secs: f32,
+    ) -> Result<preview::Request> {
+        let expanded = paths::expand(path);
+        let key = expanded.to_string_lossy().into_owned();
+        let info = self.shader_at(&key)?;
+
+        let plugin_so = hyprpm::plugin_so(&self.settings.plugin_name).ok_or_else(|| {
+            Error::other(format!(
+                "could not find {}.so — install the plugin from the Plugin page first",
+                self.settings.plugin_name
+            ))
+        })?;
+
+        Ok(preview::Request {
+            original: expanded.clone(),
+            source: self.shader_preview_source(path)?,
+            is_animation: info.is_animation(),
+            plugin_so,
+            size,
+            hold_secs,
+            dark: self.theme.dark,
+        })
     }
 
     /// Throw away one staged edit, or every edit staged for a shader.

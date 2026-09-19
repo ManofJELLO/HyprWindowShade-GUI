@@ -106,6 +106,11 @@ ApplicationWindow {
     // carries on in a session of its own, but with this window gone there is
     // nobody left to answer sudo if it asks again.
     onClosing: function (close) {
+        // The preview is a whole compositor; it does not get to stay behind.
+        // Its own watchdog would reap it within a couple of seconds anyway,
+        // but not before the user has watched the window vanish and wondered.
+        App.previewStop()
+
         if (App.hyprpmBusy && !window.hyprpmCloseConfirmed) {
             close.accepted = false
             confirm.ask("Close while hyprpm is working?",

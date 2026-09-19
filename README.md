@@ -24,7 +24,7 @@ palette is a small TOML file.
 - [What it looks like](#what-it-looks-like)
 - [Requirements](#requirements) · [Build and install](#build-and-install)
 - [How it writes your config](#how-it-writes-your-config)
-- [Shader parameters](#shader-parameters)
+- [Shader parameters](#shader-parameters) · [Seeing a shader before you save it](#seeing-a-shader-before-you-save-it)
 - [Themes](#themes)
 - [Importing rules you already wrote](#importing-rules-you-already-wrote)
 - [Installing the plugin](#installing-the-plugin)
@@ -44,7 +44,7 @@ Seven pages down the left:
 | Page | What it does |
 |---|---|
 | **Rules** | Window rules. Match by class or title, then fill any of the plugin's twenty shader tags. |
-| **Shaders** | Everything in your shader folder: what each one declares, and sliders for its tunable constants. Each shader is saved — or reverted, value by value — on its own. |
+| **Shaders** | Everything in your shader folder: what each one declares, and sliders for its tunable constants. Each shader is saved — or reverted, value by value — on its own, and previewed on a real window without leaving the page. |
 | **Layers** | `layershader`, `layeropenanim`, `layercloseanim` by namespace, with live namespaces offered. |
 | **Keybinds** | Toggle binds and session-start calls. |
 | **Preview** | Exactly the Lua that will be written, and the importer. |
@@ -73,7 +73,10 @@ own save: the header **Save** writes your Hyprland config, and **Save shader** w
 
 Hyprland does not have to be running. Without it the app still edits your config and your
 shaders; it just cannot offer you the list of open window classes or live layer namespaces,
-and the "Try it" buttons are disabled.
+and the "Try it" buttons and the shader preview are disabled.
+
+The preview additionally wants `grim`, to read frames out of the compositor it starts, and
+`swaybg` or `wbg` for its backdrop. Neither is needed for anything else in the app.
 
 ## Build and install
 
@@ -239,6 +242,41 @@ Two file-level directives are editable too:
   Right for a tint or a wipe, wrong for a dissolve that drives its own alpha.
 
 Shader files are backed up before every save, same as the config.
+
+---
+
+## Seeing a shader before you save it
+
+*Shaders → Preview → Run it* starts a **second Hyprland**, loads the plugin into
+it, and shows you the result in the pane beside the sliders. It is not a
+simulation: it is the plugin, doing what it does, to a real window.
+
+That matters more than it sounds. A preview built inside this app would have to
+reimplement the plugin — translate the GLSL, compile it another way, and invent
+values for the twenty-seven uniforms the plugin fills in every frame. It would be
+close, and the places where it was wrong would be invisible. This cannot be
+wrong, because it is the same code doing the same job.
+
+The preview renders a **copy** of your shader carrying whatever you have staged,
+so the sliders move and the window changes while your own file sits untouched
+until you press **Save shader**. The window opens, holds for ten seconds and
+closes again on a loop, because an open or close shader only exists during that
+transition — a preview of a window already open would show you nothing of it.
+Rounding, gaps, borders, opacity, blur and your own animation curves are read
+back from your running session, so the window in the pane is shaped like the
+windows around it, and it sits on a light-to-dark gradient, which is the only way
+to tell whether a dissolve really reaches zero alpha.
+
+Nothing appears on your screen. A nested compositor normally opens a window of
+its own; this one is given a headless output and then has that window taken away,
+so the only thing that ever sees it is the pane. It shuts down when you stop it,
+when you pick another shader, and when you close the app — and if the app dies
+without getting the chance, the preview notices that it has been orphaned and
+exits by itself a couple of seconds later.
+
+It needs Hyprland running to nest inside, the plugin installed, and `grim` to
+read frames out. `swaybg` or `wbg` draws the gradient; without one you get a flat
+background and nothing else changes. The button says which of these is missing.
 
 ---
 

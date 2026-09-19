@@ -20,6 +20,11 @@ Item {
 
     readonly property var selected: App.shaderByPath(page.selectedPath)
     readonly property bool selectedDirty: page.selected ? page.selected.dirty === true : false
+
+    // Where the preview goes. Beside the parameters when there is room for both
+    // to be useful, underneath when there is not — a 300px column of sliders
+    // next to a 300px pane serves neither.
+    property bool sideBySide: true
     readonly property int selectedStaged: page.selected ? (page.selected.staged || 0) : 0
 
     function revert(item) {
@@ -233,292 +238,317 @@ Item {
             }
 
             ColumnLayout {
+                id: detailColumn
                 anchors.fill: parent
                 visible: page.selected !== null
                 spacing: Theme.gap
 
-                ScrollView {
-                    id: detailScroll
+                onWidthChanged: page.sideBySide = width > 760
+
+                // One grid rather than two layouts with the pane in each: with
+                // two columns the pane sits beside the parameters, with one it
+                // falls underneath them, and nothing is built twice.
+                GridLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
-                    contentWidth: availableWidth
+                    columns: page.sideBySide ? 2 : 1
+                    columnSpacing: Theme.pad
+                    rowSpacing: Theme.gap
 
-                    ColumnLayout {
-                        width: detailScroll.availableWidth
-                        spacing: Theme.pad
+                    ScrollView {
+                        id: detailScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: availableWidth
 
-                        // --- header ---
-                        Card {
-                            Layout.fillWidth: true
-                            title: page.selected ? page.selected.name : ""
-                            subtitle: page.selected ? page.selected.display : ""
+                        ColumnLayout {
+                            width: detailScroll.availableWidth
+                            spacing: Theme.pad
 
-                            Text {
-                                width: parent.width
-                                visible: page.selected && page.selected.description
-                                text: page.selected && page.selected.description
-                                      ? page.selected.description : ""
-                                color: Theme.fgDim
-                                font.pixelSize: Theme.fontSize
-                                wrapMode: Text.WordWrap
-                            }
-
-                            Flow {
-                                width: parent.width
-                                spacing: Theme.gapSmall
-
-                                Badge {
-                                    visible: page.selected && page.selected.isAnimation
-                                    text: "one-shot animation"
-                                    tint: Theme.accentAlt
-                                }
-                                Badge {
-                                    visible: page.selected && page.selected.isMotionDriven
-                                    text: "motion driven"
-                                    tint: Theme.accent
-                                }
-                                Badge {
-                                    visible: page.selected && page.selected.inUse
-                                    text: "used by a rule"
-                                    tint: Theme.ok
-                                }
-                                Badge {
-                                    visible: page.selected
-                                             && page.selected.uniforms.indexOf("time") >= 0
-                                    text: "redraws continuously"
-                                    tint: Theme.warn
-                                }
-                            }
-                        }
-
-                        // --- notes ---
-                        Card {
-                            Layout.fillWidth: true
-                            visible: page.selected && page.selected.notes.length > 0
-                            title: "Worth knowing"
-
-                            Repeater {
-                                model: page.selected ? page.selected.notes : []
+                            // --- header ---
+                            Card {
+                                Layout.fillWidth: true
+                                title: page.selected ? page.selected.name : ""
+                                subtitle: page.selected ? page.selected.display : ""
 
                                 Text {
-                                    required property string modelData
                                     width: parent.width
-                                    text: "•  " + modelData
-                                    color: Theme.warn
+                                    visible: page.selected && page.selected.description
+                                    text: page.selected && page.selected.description
+                                          ? page.selected.description : ""
+                                    color: Theme.fgDim
                                     font.pixelSize: Theme.fontSize
                                     wrapMode: Text.WordWrap
                                 }
-                            }
-                        }
 
-                        // --- animation timing ---
-                        Card {
-                            Layout.fillWidth: true
-                            visible: page.selected !== null
-                            title: "Timing"
-                            subtitle: page.selected && page.selected.isAnimation
-                                      ? "This shader drives itself from progress, so how long it runs " +
-                                        "is part of the effect. A rule can still override it."
-                                      : "This shader does not use progress, so timing only applies if " +
-                                        "you use it as an open or close animation."
-
-                            FieldRow {
-                                width: parent.width
-                                label: "Declares a duration"
-                                hint: "// @duration in the file"
-
-                                Row {
-                                    spacing: Theme.gap
-
-                                    Toggle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        checked: page.selected && page.selected.duration !== null
-                                                 && page.selected.duration !== undefined
-                                        onToggled: {
-                                            App.run("shader.setDuration", {
-                                                path: page.selectedPath,
-                                                seconds: checked ? 0.4 : null
-                                            })
-                                        }
-                                    }
-
-                                    PillButton {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: page.selected
-                                                 && page.selected.durationStaged === true
-                                        compact: true
-                                        text: "Revert"
-                                        tooltip: page.selected && page.selected.savedDuration
-                                                 ? "Back to the file's "
-                                                   + App.seconds(page.selected.savedDuration)
-                                                 : "Back to no duration at all, as the file has it"
-                                        onClicked: page.revert("duration")
-                                    }
-                                }
-                            }
-
-                            LabeledSlider {
-                                width: parent.width
-                                visible: page.selected && page.selected.duration !== null
-                                         && page.selected.duration !== undefined
-                                label: "Duration (seconds) — the plugin caps this at 5"
-                                from: 0.05
-                                to: 5.0
-                                stepSize: 0.05
-                                value: page.selected && page.selected.duration ? page.selected.duration : 0.4
-                                // Where the file has it, while it differs.
-                                markValue: page.selected && page.selected.durationStaged === true
-                                           ? page.selected.savedDuration : null
-                                onSettled: function (v) {
-                                    App.run("shader.setDuration", { path: page.selectedPath, seconds: v })
-                                }
-                            }
-
-                            FieldRow {
-                                width: parent.width
-                                label: "Composite on close"
-                                hint: "// @overlay — keep Hyprland's own fade underneath instead of " +
-                                      "replacing it. Right for a tint or wipe; wrong for a dissolve that " +
-                                      "drives its own alpha."
-
-                                Row {
-                                    spacing: Theme.gap
-
-                                    Toggle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        checked: page.selected ? page.selected.overlay : false
-                                        onToggled: {
-                                            App.run("shader.setOverlay", {
-                                                path: page.selectedPath,
-                                                overlay: checked
-                                            })
-                                        }
-                                    }
-
-                                    PillButton {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: page.selected && page.selected.overlayStaged === true
-                                        compact: true
-                                        text: "Revert"
-                                        tooltip: "Back to what the file says"
-                                        onClicked: page.revert("overlay")
-                                    }
-                                }
-                            }
-                        }
-
-                        // --- parameters ---
-                        Card {
-                            Layout.fillWidth: true
-                            visible: page.selected !== null
-                            title: "Parameters"
-                            subtitle: page.selected && page.selected.params.length > 0
-                                      ? "These are const declarations in the file. Moving one stages a " +
-                                        "change; nothing is written until you save the shader, and each " +
-                                        "value can go back on its own before you do."
-                                      : ""
-
-                            Text {
-                                width: parent.width
-                                visible: page.selected && page.selected.params.length === 0
-                                wrapMode: Text.WordWrap
-                                color: Theme.muted
-                                font.pixelSize: Theme.fontSize
-                                text: "Nothing tunable found. Add a const with a plain number — " +
-                                      "const float DIM = 0.6; — and it shows up here. A " +
-                                      "// @param 0 1 0.01 \"Dim amount\" comment above it gives it a " +
-                                      "proper range and label."
-                            }
-
-                            Repeater {
-                                model: page.selected ? page.selected.params : []
-
-                                ParamEditor {
-                                    required property var modelData
+                                Flow {
                                     width: parent.width
-                                    param: modelData
-                                    shaderPath: page.selectedPath
-                                }
-                            }
-                        }
-
-                        // --- uniforms ---
-                        Card {
-                            Layout.fillWidth: true
-                            visible: page.selected && page.selected.uniforms.length > 0
-                            title: "Uniforms it declares"
-                            subtitle: "The plugin fills these in every frame."
-
-                            Flow {
-                                width: parent.width
-                                spacing: Theme.gapSmall
-
-                                Repeater {
-                                    model: page.selected ? page.selected.uniforms : []
+                                    spacing: Theme.gapSmall
 
                                     Badge {
-                                        required property string modelData
-                                        text: modelData
+                                        visible: page.selected && page.selected.isAnimation
+                                        text: "one-shot animation"
+                                        tint: Theme.accentAlt
+                                    }
+                                    Badge {
+                                        visible: page.selected && page.selected.isMotionDriven
+                                        text: "motion driven"
                                         tint: Theme.accent
                                     }
-                                }
-                            }
-
-                            Text {
-                                width: parent.width
-                                visible: page.selected && page.selected.isMotionDriven
-                                wrapMode: Text.WordWrap
-                                color: Theme.warn
-                                font.pixelSize: Theme.fontSizeSmall
-                                text: "Motion uniforms read zero on a layer surface, so pointing this " +
-                                      "shader at a layer namespace does nothing at all — silently. " +
-                                      "Drive it from progress in a layer animation instead."
-                            }
-                        }
-
-                        // --- source ---
-                        Card {
-                            Layout.fillWidth: true
-                            visible: page.selected !== null
-                            title: "Source"
-
-                            PillButton {
-                                text: page.showSource ? "Hide source" : "Show source"
-                                onClicked: page.showSource = !page.showSource
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: Math.min(420, sourceText.implicitHeight + Theme.gap * 2)
-                                visible: page.showSource
-                                color: Theme.bgAlt
-                                radius: Theme.radiusSmall
-                                border.width: 1
-                                border.color: Theme.border
-
-                                ScrollView {
-                                    anchors.fill: parent
-                                    anchors.margins: Theme.gap
-                                    clip: true
-
-                                    Text {
-                                        id: sourceText
-                                        text: page.showSource && page.selectedPath !== ""
-                                              ? App.query("shaderSource", { path: page.selectedPath })
-                                              : ""
-                                        color: Theme.fgDim
-                                        font.family: Theme.monoFamily
-                                        font.pixelSize: Theme.fontSizeSmall
-                                        textFormat: Text.PlainText
+                                    Badge {
+                                        visible: page.selected && page.selected.inUse
+                                        text: "used by a rule"
+                                        tint: Theme.ok
+                                    }
+                                    Badge {
+                                        visible: page.selected
+                                                 && page.selected.uniforms.indexOf("time") >= 0
+                                        text: "redraws continuously"
+                                        tint: Theme.warn
                                     }
                                 }
                             }
-                        }
 
-                        Item {
-                            Layout.preferredHeight: Theme.pad
+                            // --- notes ---
+                            Card {
+                                Layout.fillWidth: true
+                                visible: page.selected && page.selected.notes.length > 0
+                                title: "Worth knowing"
+
+                                Repeater {
+                                    model: page.selected ? page.selected.notes : []
+
+                                    Text {
+                                        required property string modelData
+                                        width: parent.width
+                                        text: "•  " + modelData
+                                        color: Theme.warn
+                                        font.pixelSize: Theme.fontSize
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
+
+                            // --- animation timing ---
+                            Card {
+                                Layout.fillWidth: true
+                                visible: page.selected !== null
+                                title: "Timing"
+                                subtitle: page.selected && page.selected.isAnimation
+                                          ? "This shader drives itself from progress, so how long it runs " +
+                                            "is part of the effect. A rule can still override it."
+                                          : "This shader does not use progress, so timing only applies if " +
+                                            "you use it as an open or close animation."
+
+                                FieldRow {
+                                    width: parent.width
+                                    label: "Declares a duration"
+                                    hint: "// @duration in the file"
+
+                                    Row {
+                                        spacing: Theme.gap
+
+                                        Toggle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            checked: page.selected && page.selected.duration !== null
+                                                     && page.selected.duration !== undefined
+                                            onToggled: {
+                                                App.run("shader.setDuration", {
+                                                    path: page.selectedPath,
+                                                    seconds: checked ? 0.4 : null
+                                                })
+                                            }
+                                        }
+
+                                        PillButton {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            visible: page.selected
+                                                     && page.selected.durationStaged === true
+                                            compact: true
+                                            text: "Revert"
+                                            tooltip: page.selected && page.selected.savedDuration
+                                                     ? "Back to the file's "
+                                                       + App.seconds(page.selected.savedDuration)
+                                                     : "Back to no duration at all, as the file has it"
+                                            onClicked: page.revert("duration")
+                                        }
+                                    }
+                                }
+
+                                LabeledSlider {
+                                    width: parent.width
+                                    visible: page.selected && page.selected.duration !== null
+                                             && page.selected.duration !== undefined
+                                    label: "Duration (seconds) — the plugin caps this at 5"
+                                    from: 0.05
+                                    to: 5.0
+                                    stepSize: 0.05
+                                    value: page.selected && page.selected.duration ? page.selected.duration : 0.4
+                                    // Where the file has it, while it differs.
+                                    markValue: page.selected && page.selected.durationStaged === true
+                                               ? page.selected.savedDuration : null
+                                    onSettled: function (v) {
+                                        App.run("shader.setDuration", { path: page.selectedPath, seconds: v })
+                                    }
+                                }
+
+                                FieldRow {
+                                    width: parent.width
+                                    label: "Composite on close"
+                                    hint: "// @overlay — keep Hyprland's own fade underneath instead of " +
+                                          "replacing it. Right for a tint or wipe; wrong for a dissolve that " +
+                                          "drives its own alpha."
+
+                                    Row {
+                                        spacing: Theme.gap
+
+                                        Toggle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            checked: page.selected ? page.selected.overlay : false
+                                            onToggled: {
+                                                App.run("shader.setOverlay", {
+                                                    path: page.selectedPath,
+                                                    overlay: checked
+                                                })
+                                            }
+                                        }
+
+                                        PillButton {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            visible: page.selected && page.selected.overlayStaged === true
+                                            compact: true
+                                            text: "Revert"
+                                            tooltip: "Back to what the file says"
+                                            onClicked: page.revert("overlay")
+                                        }
+                                    }
+                                }
+                            }
+
+                            // --- parameters ---
+                            Card {
+                                Layout.fillWidth: true
+                                visible: page.selected !== null
+                                title: "Parameters"
+                                subtitle: page.selected && page.selected.params.length > 0
+                                          ? "These are const declarations in the file. Moving one stages a " +
+                                            "change; nothing is written until you save the shader, and each " +
+                                            "value can go back on its own before you do."
+                                          : ""
+
+                                Text {
+                                    width: parent.width
+                                    visible: page.selected && page.selected.params.length === 0
+                                    wrapMode: Text.WordWrap
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontSize
+                                    text: "Nothing tunable found. Add a const with a plain number — " +
+                                          "const float DIM = 0.6; — and it shows up here. A " +
+                                          "// @param 0 1 0.01 \"Dim amount\" comment above it gives it a " +
+                                          "proper range and label."
+                                }
+
+                                Repeater {
+                                    model: page.selected ? page.selected.params : []
+
+                                    ParamEditor {
+                                        required property var modelData
+                                        width: parent.width
+                                        param: modelData
+                                        shaderPath: page.selectedPath
+                                    }
+                                }
+                            }
+
+                            // --- uniforms ---
+                            Card {
+                                Layout.fillWidth: true
+                                visible: page.selected && page.selected.uniforms.length > 0
+                                title: "Uniforms it declares"
+                                subtitle: "The plugin fills these in every frame."
+
+                                Flow {
+                                    width: parent.width
+                                    spacing: Theme.gapSmall
+
+                                    Repeater {
+                                        model: page.selected ? page.selected.uniforms : []
+
+                                        Badge {
+                                            required property string modelData
+                                            text: modelData
+                                            tint: Theme.accent
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    width: parent.width
+                                    visible: page.selected && page.selected.isMotionDriven
+                                    wrapMode: Text.WordWrap
+                                    color: Theme.warn
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    text: "Motion uniforms read zero on a layer surface, so pointing this " +
+                                          "shader at a layer namespace does nothing at all — silently. " +
+                                          "Drive it from progress in a layer animation instead."
+                                }
+                            }
+
+                            // --- source ---
+                            Card {
+                                Layout.fillWidth: true
+                                visible: page.selected !== null
+                                title: "Source"
+
+                                PillButton {
+                                    text: page.showSource ? "Hide source" : "Show source"
+                                    onClicked: page.showSource = !page.showSource
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: Math.min(420, sourceText.implicitHeight + Theme.gap * 2)
+                                    visible: page.showSource
+                                    color: Theme.bgAlt
+                                    radius: Theme.radiusSmall
+                                    border.width: 1
+                                    border.color: Theme.border
+
+                                    ScrollView {
+                                        anchors.fill: parent
+                                        anchors.margins: Theme.gap
+                                        clip: true
+
+                                        Text {
+                                            id: sourceText
+                                            text: page.showSource && page.selectedPath !== ""
+                                                  ? App.query("shaderSource", { path: page.selectedPath })
+                                                  : ""
+                                            color: Theme.fgDim
+                                            font.family: Theme.monoFamily
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            textFormat: Text.PlainText
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item {
+                                Layout.preferredHeight: Theme.pad
+                            }
                         }
+                    }
+
+                    ShaderPreview {
+                        shaderPath: page.selectedPath
+                        shaderName: page.selected ? page.selected.name : ""
+
+                        Layout.fillWidth: !page.sideBySide
+                        Layout.fillHeight: page.sideBySide
+                        Layout.preferredWidth: page.sideBySide ? 380 : -1
+                        Layout.preferredHeight: page.sideBySide ? -1 : 300
+                        Layout.minimumWidth: page.sideBySide ? 300 : 0
                     }
                 }
 

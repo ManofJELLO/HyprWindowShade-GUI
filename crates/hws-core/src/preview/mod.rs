@@ -155,6 +155,7 @@ impl Preview {
             plugin_so: request.plugin_so.to_string_lossy().into_owned(),
             background: if request.dark { 0x121216 } else { 0x303038 },
             size: (request.size.0.max(160), request.size.1.max(120)),
+            app_pid: std::process::id(),
             look,
         };
 

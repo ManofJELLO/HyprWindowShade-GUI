@@ -14,6 +14,7 @@ fn main() {
         "qml/components/PasswordDialog.qml",
         "qml/components/PillButton.qml",
         "qml/components/ShaderPicker.qml",
+        "qml/components/ShaderPreview.qml",
         "qml/components/Tip.qml",
         "qml/components/Toast.qml",
         "qml/components/Toggle.qml",

@@ -167,6 +167,31 @@ pub fn list() -> Result<Vec<Plugin>> {
     Ok(parse_list(&strip_ansi(&text)))
 }
 
+/// Where hyprpm keeps the built plugin, if it is there.
+///
+/// hyprpm builds into a store of its own under `/var/cache/hyprpm/<user>/`,
+/// one directory per repository, and the `.so` inside is named after the
+/// plugin. The repository directory is not always named the same as the
+/// plugin, so the directories are searched rather than guessed at. A manual
+/// install under the Hyprland data directory is the fallback.
+pub fn plugin_so(name: &str) -> Option<PathBuf> {
+    let file = format!("{name}.so");
+
+    let user = std::env::var("USER").unwrap_or_default();
+    let store = PathBuf::from("/var/cache/hyprpm").join(&user);
+    if let Ok(entries) = std::fs::read_dir(&store) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let candidate = entry.path().join(&file);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let manual = dirs::data_dir()?.join("hyprland").join("plugins").join(&file);
+    manual.is_file().then_some(manual)
+}
+
 /// Everything the plugin page needs to describe the installation, as JSON.
 ///
 /// Best-effort like the rest of the live state: a machine without hyprpm is a

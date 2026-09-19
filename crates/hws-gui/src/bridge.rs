@@ -33,6 +33,9 @@ pub mod qobject {
         #[qproperty(QString, shot_dir, cxx_name = "shotDir")]
         #[qproperty(bool, hyprpm_busy, cxx_name = "hyprpmBusy")]
         #[qproperty(QString, hyprpm_label, cxx_name = "hyprpmLabel")]
+        #[qproperty(bool, preview_busy, cxx_name = "previewBusy")]
+        #[qproperty(bool, preview_running, cxx_name = "previewRunning")]
+        #[qproperty(QString, preview_shader, cxx_name = "previewShader")]
         type Backend = super::BackendRust;
     }
 
@@ -129,6 +132,36 @@ pub mod qobject {
         fn hyprpm_open_terminal(self: Pin<&mut Backend>, op: &QString, argument: &QString);
     }
 
+    extern "RustQt" {
+        /// Start previewing one shader at the given pane size.
+        ///
+        /// Returns at once: a compositor takes a few seconds to come up, so the
+        /// work is on a thread and `previewRunning` says when it is ready.
+        #[qinvokable]
+        #[cxx_name = "previewStart"]
+        fn preview_start(self: Pin<&mut Backend>, path: &QString, width: i32, height: i32);
+
+        /// Tear the preview down.
+        #[qinvokable]
+        #[cxx_name = "previewStop"]
+        fn preview_stop(self: Pin<&mut Backend>);
+
+        /// Push the shader's staged source into the running preview.
+        ///
+        /// Cheap — one file write — because the plugin notices the mtime and
+        /// reloads by itself. This is what makes a slider live.
+        #[qinvokable]
+        #[cxx_name = "previewUpdate"]
+        fn preview_update(self: Pin<&mut Backend>, path: &QString);
+
+        /// Grab the current frame, as `{"path": ..., "n": ...}`.
+        ///
+        /// `n` changes every time so QML can defeat its own image cache.
+        #[qinvokable]
+        #[cxx_name = "previewFrame"]
+        fn preview_frame(self: Pin<&mut Backend>) -> QString;
+    }
+
     impl cxx_qt::Initialize for Backend {}
 
     // Lets `qt_thread()` hand a background thread a way back onto the Qt event
@@ -138,12 +171,20 @@ pub mod qobject {
 }
 
 use core::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use hws_core::hyprpm;
+use hws_core::preview::Preview;
 use hws_core::Session;
 use serde_json::{json, Value};
+
+/// How long the demo window stays open before closing again.
+///
+/// Long enough to look at the steady state, short enough that the open and
+/// close — which is all an animation shader ever is — come round again soon.
+const HOLD_SECS: f32 = 10.0;
 
 /// The Rust side of the singleton.
 #[derive(Default)]
@@ -166,6 +207,20 @@ pub struct BackendRust {
     hyprpm_label: QString,
     /// The running operation, kept so it can be answered and cancelled.
     hyprpm_job: Option<hyprpm::Job>,
+
+    /// The preview compositor, if one is up.
+    ///
+    /// Behind a mutex because starting one takes seconds and so happens on a
+    /// thread, while frames are grabbed from the Qt thread in between.
+    preview: Arc<Mutex<Preview>>,
+    /// True while a preview is starting or stopping.
+    preview_busy: bool,
+    /// True once it is up.
+    preview_running: bool,
+    /// Which shader it is showing.
+    preview_shader: QString,
+    /// Bumped per frame, so QML sees a new URL each time.
+    preview_frames: u64,
 }
 
 impl cxx_qt::Initialize for qobject::Backend {
@@ -276,6 +331,129 @@ impl qobject::Backend {
                 backend.push_state();
             });
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Preview
+    //
+    // A second Hyprland with the plugin loaded in it. Like hyprpm this is a
+    // child process rather than a Session command, but unlike hyprpm it is
+    // long-lived and answers questions while it runs, so the handle lives here
+    // behind a mutex.
+    // -----------------------------------------------------------------------
+
+    /// Start previewing a shader.
+    pub fn preview_start(mut self: Pin<&mut Self>, path: &QString, width: i32, height: i32) {
+        if self.as_ref().rust().preview_busy {
+            return;
+        }
+
+        let path = path.to_string();
+        let size = (width.max(1) as u32, height.max(1) as u32);
+
+        // Built here, on the Qt thread, because only the session knows what is
+        // staged — and the session must not be touched from the worker.
+        let request = match self.as_mut().rust_mut().session.as_ref() {
+            Some(session) => session.preview_request(&path, size, HOLD_SECS),
+            None => Err(hws_core::Error::other("the backend is still starting up")),
+        };
+        let request = match request {
+            Ok(request) => request,
+            Err(e) => {
+                let m = QString::from(&e.to_string());
+                self.as_mut().notify(&m, true);
+                return;
+            }
+        };
+
+        self.as_mut().set_preview_busy(true);
+        let preview = Arc::clone(&self.as_ref().rust().preview);
+        let thread = self.qt_thread();
+
+        std::thread::spawn(move || {
+            let outcome = preview
+                .lock()
+                .map_err(|_| "the preview is wedged".to_string())
+                .and_then(|mut preview| preview.start(&request).map_err(|e| e.to_string()));
+
+            let _ = thread.queue(move |mut backend| {
+                backend.as_mut().set_preview_busy(false);
+                match outcome {
+                    Ok(()) => {
+                        backend.as_mut().set_preview_running(true);
+                        backend.as_mut().set_preview_shader(QString::from(&path));
+                    }
+                    Err(e) => {
+                        backend.as_mut().set_preview_running(false);
+                        backend.as_mut().set_preview_shader(QString::from(""));
+                        let m = QString::from(&e);
+                        backend.as_mut().notify(&m, true);
+                    }
+                }
+            });
+        });
+    }
+
+    /// Stop the preview.
+    pub fn preview_stop(mut self: Pin<&mut Self>) {
+        self.as_mut().set_preview_running(false);
+        self.as_mut().set_preview_shader(QString::from(""));
+
+        let preview = Arc::clone(&self.as_ref().rust().preview);
+        // Killing a compositor and joining the demo loop is quick but not
+        // instant, and the window must not freeze on the way out.
+        std::thread::spawn(move || {
+            if let Ok(mut preview) = preview.lock() {
+                preview.stop();
+            }
+        });
+    }
+
+    /// Write the shader's staged source into the running preview.
+    pub fn preview_update(mut self: Pin<&mut Self>, path: &QString) {
+        if !self.as_ref().rust().preview_running {
+            return;
+        }
+        let path = path.to_string();
+        let source = match self.as_mut().rust_mut().session.as_ref() {
+            Some(session) => session.shader_preview_source(&path),
+            None => return,
+        };
+        let Ok(source) = source else {
+            return;
+        };
+
+        let preview = Arc::clone(&self.as_ref().rust().preview);
+        // try_lock, not lock: this runs on every slider move, and a start still
+        // in progress holds the mutex for seconds. A dropped update is nothing
+        // — the next one carries the same value.
+        let guard = preview.try_lock();
+        if let Ok(mut preview) = guard {
+            let _ = preview.set_source(&source);
+        }
+    }
+
+    /// Grab a frame for the pane.
+    pub fn preview_frame(mut self: Pin<&mut Self>) -> QString {
+        if !self.as_ref().rust().preview_running {
+            return QString::from(&json!({ "error": "not running" }).to_string());
+        }
+
+        let preview = Arc::clone(&self.as_ref().rust().preview);
+        let captured = match preview.try_lock() {
+            Ok(mut preview) => preview.capture().map_err(|e| e.to_string()),
+            // Busy starting or stopping; the timer will ask again.
+            Err(_) => return QString::from(&json!({ "error": "busy" }).to_string()),
+        };
+
+        match captured {
+            Ok(path) => {
+                let n = self.as_ref().rust().preview_frames.wrapping_add(1);
+                self.as_mut().rust_mut().preview_frames = n;
+                QString::from(&json!({ "path": path.to_string_lossy(), "n": n }).to_string())
+            }
+            Err(e) => QString::from(&json!({ "error": e }).to_string()),
+        }
     }
 
     // -----------------------------------------------------------------------
