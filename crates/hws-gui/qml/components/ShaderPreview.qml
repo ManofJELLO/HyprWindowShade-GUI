@@ -39,16 +39,35 @@ Item {
                          Theme.bgAlt, pane.desktopBackdrop)
     }
 
-    // Leaving the page, closing the app or picking another shader all have to
-    // take the compositor with them: nothing else will.
-    Component.onDestruction: {
-        if (App.previewRunning)
+    // Anything that means "you are not looking at this any more" has to take
+    // the compositor with it: nothing else will.
+    //
+    // The guard is on more than `previewRunning`, because that is false for
+    // the several seconds a start is in flight — and a start abandoned
+    // half-way still lands, leaving a compositor cycling terminals for a pane
+    // nobody can see. Stopping when nothing is running is a no-op anyway.
+    function stopIfMine() {
+        if (App.previewRunning || App.previewBusy)
             App.previewStop()
     }
 
+    // Pages live in a StackLayout and are all built at startup, so this fires
+    // at window teardown and not a moment before. Leaving the page is
+    // `onVisibleChanged` below; this is the app closing.
+    Component.onDestruction: pane.stopIfMine()
+
+    // Which is why visibility matters: a hidden page is still a live object
+    // with a live timer, and without this the preview would go on running —
+    // and grabbing ten frames a second — behind whatever page you switched to.
+    onVisibleChanged: {
+        if (!pane.visible) {
+            pane.stopIfMine()
+            frame.source = ""
+        }
+    }
+
     onShaderPathChanged: {
-        if (App.previewRunning)
-            App.previewStop()
+        pane.stopIfMine()
         frame.source = ""
     }
 
@@ -66,7 +85,7 @@ Item {
         // Ten frames a second: enough to read an animation, few enough that a
         // grim per frame stays out of the way.
         interval: 100
-        running: pane.showingThis
+        running: pane.showingThis && pane.visible
         repeat: true
         onTriggered: {
             var f = App.previewFrame()

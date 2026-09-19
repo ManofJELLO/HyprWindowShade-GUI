@@ -114,7 +114,14 @@ struct Running {
     source: String,
     stop: Arc<AtomicBool>,
     demo: Option<JoinHandle<()>>,
-    frame: PathBuf,
+    /// Two frame files, written alternately.
+    ///
+    /// The UI loads these asynchronously, so writing one file over and over
+    /// means the loader can be half-way through the frame that the next
+    /// capture is truncating. A torn PNG fails to load and the pane blinks.
+    /// Alternating gives every reader a whole file to itself.
+    frames: [PathBuf; 2],
+    next_frame: usize,
 }
 
 /// What the UI needs to know about the preview.
@@ -197,7 +204,12 @@ impl Preview {
         let config_path = dir.join("preview.lua");
         paths::write_atomic(&config_path, &config::render(&cfg))?;
 
-        let before = hyprctl::instances().unwrap_or_default();
+        // Not `unwrap_or_default()`: an empty list here would make the first
+        // instance found afterwards look new, and the first instance is the
+        // user's own session. Everything downstream is then aimed at their
+        // real desktop — `output create headless` would add a phantom monitor
+        // to it. A preview that refuses to start is cheaper by a mile.
+        let before = hyprctl::instances()?;
         let compositor = spawn_compositor(&config_path, &dir)?;
         let (signature, socket) = match wait_for_instance(&before) {
             Ok(found) => found,
@@ -218,7 +230,8 @@ impl Preview {
             source: request.source.clone(),
             stop: Arc::clone(&stop),
             demo: None,
-            frame: dir.join("frame.png"),
+            frames: [dir.join("frame-a.png"), dir.join("frame-b.png")],
+            next_frame: 0,
         };
 
         if let Err(e) = go_headless(&running.signature) {
@@ -265,13 +278,16 @@ impl Preview {
 
     /// Grab the current frame, returning the file it was written to.
     pub fn capture(&mut self) -> Result<PathBuf> {
-        let Some(running) = &self.running else {
+        let Some(running) = &mut self.running else {
             return Err(Error::other("no preview is running"));
         };
 
+        let frame = running.frames[running.next_frame].clone();
+        running.next_frame = 1 - running.next_frame;
+
         let out = Command::new("grim")
             .args(["-o", OUTPUT, "-l", "0"])
-            .arg(&running.frame)
+            .arg(&frame)
             .env("WAYLAND_DISPLAY", &running.socket)
             .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .output()
@@ -291,7 +307,7 @@ impl Preview {
                 err
             }));
         }
-        Ok(running.frame.clone())
+        Ok(frame)
     }
 
     /// Stop the preview and clean up after it.
@@ -322,6 +338,21 @@ impl Running {
         }
         let _ = self.compositor.kill();
         let _ = self.compositor.wait();
+
+        // Hyprland does not tidy its own runtime directory, gracefully or
+        // otherwise — an `hl.dsp.exit()` leaves it behind exactly as a kill
+        // does — so a preview that has been opened and closed a few dozen
+        // times leaves a few dozen directories in $XDG_RUNTIME_DIR. This one
+        // was made by an instance we started and have just reaped, so it is
+        // ours to remove.
+        if !self.signature.is_empty() {
+            let dir = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("hypr")
+                .join(&self.signature);
+            let _ = std::fs::remove_dir_all(dir);
+        }
         // The shader copy, the generated config and the compositor's log are
         // left in the runtime directory until the next preview overwrites
         // them: when one fails to start, they are the evidence of why.
@@ -397,7 +428,15 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
 
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
-            let Some(mut client) = spawn_demo_client(&socket) else {
+            // Each client is given a lifetime and closes itself when it runs
+            // out. That is not a detail: a window the user closes is how a
+            // close animation — and any close shader, which is the whole
+            // reason the cycle exists — actually happens. Signalling the
+            // terminal instead would be a kill, because that is all
+            // `Child::kill` can send, and a killed client is a surface that
+            // vanishes rather than a window that closes.
+            let lifetime = still + moving + still;
+            let Some(mut client) = spawn_demo_client(&socket, lifetime) else {
                 // No terminal to demo with. Sleeping rather than spinning keeps
                 // this from becoming a fork bomb on a bare system.
                 sleep_unless_stopped(Duration::from_secs(5), &stop);
@@ -410,21 +449,24 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
             // Then make it move. A second window is the whole trick: tiling it
             // shoves the first one aside, which is a real move and a real
             // resize with real velocity behind them — the only thing that makes
-            // a wobble shader show anything at all. Dispatching a move instead
-            // would mean talking Lua to the compositor for something two more
-            // processes do by themselves.
-            let mut neighbour = spawn_demo_client(&socket);
+            // a wobble shader show anything at all.
+            let mut neighbour = (!stop.load(Ordering::SeqCst))
+                .then(|| spawn_demo_client(&socket, moving))
+                .flatten();
             sleep_unless_stopped(moving, &stop);
-            if let Some(mut neighbour) = neighbour.take() {
-                let _ = neighbour.kill();
-                let _ = neighbour.wait();
-            }
+            reap(neighbour.take());
+
+            // The first window is still up, settling back.
             sleep_unless_stopped(still, &stop);
 
-            // SIGTERM rather than SIGKILL: a terminal closes its window on the
-            // way out, which is what makes the close animation — and any close
-            // shader — actually run.
-            let _ = client.kill();
+            if stop.load(Ordering::SeqCst) {
+                // Going away: no time left for a graceful close.
+                reap(Some(client));
+                return;
+            }
+
+            // Otherwise it closes by itself, on time. Wait for that rather
+            // than pre-empting it, so the close is the client's own.
             let _ = client.wait();
 
             // Long enough for the close animation to finish before the next
@@ -432,6 +474,14 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
             sleep_unless_stopped(Duration::from_millis(900), &stop);
         }
     })
+}
+
+/// Stop a demo client that has not run out of time, and collect it.
+fn reap(child: Option<Child>) {
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn sleep_unless_stopped(total: Duration, stop: &AtomicBool) {
@@ -449,8 +499,8 @@ fn sleep_unless_stopped(total: Duration, stop: &AtomicBool) {
 /// The client is pointed straight at the nested socket rather than dispatched
 /// through `hyprctl`, which under a Lua config evaluates its argument as Lua
 /// and so cannot simply be handed a command line.
-fn spawn_demo_client(socket: &str) -> Option<Child> {
-    let (program, args) = demo_terminal()?;
+fn spawn_demo_client(socket: &str, lifetime: Duration) -> Option<Child> {
+    let (program, args) = demo_terminal(lifetime)?;
     spawn_on_socket(socket, program, args)
 }
 
@@ -472,7 +522,7 @@ fn spawn_on_socket(socket: &str, program: PathBuf, args: Vec<String>) -> Option<
 }
 
 /// A terminal to use as the demo window, with the arguments that fill it.
-fn demo_terminal() -> Option<(PathBuf, Vec<String>)> {
+fn demo_terminal(lifetime: Duration) -> Option<(PathBuf, Vec<String>)> {
     const KNOWN: &[(&str, &[&str])] = &[
         ("kitty", &["-o", "font_size=12", "-o", "cursor_blink_interval=0", "-e"]),
         ("foot", &["-e"]),
@@ -482,21 +532,35 @@ fn demo_terminal() -> Option<(PathBuf, Vec<String>)> {
         ("xterm", &["-e"]),
     ];
 
-    let body = "/bin/sh".to_string();
-    let script = "-c".to_string();
     // Something with text and a little colour, so a shader that touches
-    // contrast or saturation has something to act on.
-    let content = "printf '\\n  HyprWindowShade\\n  preview\\n\\n'; \
-                   printf '  \\033[31m##\\033[32m##\\033[33m##\\033[34m##\\033[35m##\\033[36m##\\033[0m\\n\\n'; \
-                   printf '  the quick brown fox jumps\\n  over the lazy dog\\n'; \
-                   exec sleep 3600"
-        .to_string();
+    // contrast or saturation has something to act on — and a `sleep` that runs
+    // out, which is how the window comes to close itself.
+    //
+    // A raw string, so the escapes below are the ones `printf` receives rather
+    // than ones Rust has already eaten.
+    let content = format!(
+        concat!(
+            r"printf '
+  HyprWindowShade
+  preview
+
+'; ",
+            r"printf '  [31m##[32m##[33m##[34m##[35m##[36m##[0m
+
+'; ",
+            r"printf '  the quick brown fox jumps
+  over the lazy dog
+'; ",
+            "exec sleep {:.2}",
+        ),
+        lifetime.as_secs_f32()
+    );
 
     KNOWN.iter().find_map(|(name, prefix)| {
         paths::which(name).map(|path| {
             let mut args: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
-            args.push(body.clone());
-            args.push(script.clone());
+            args.push("/bin/sh".to_string());
+            args.push("-c".to_string());
             args.push(content.clone());
             (path, args)
         })

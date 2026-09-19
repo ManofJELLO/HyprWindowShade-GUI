@@ -51,35 +51,60 @@ const TOOLS: &[(&str, &[&str])] = &[("swaybg", &["-i", "{}", "-m", "fill"]), ("w
 /// parallel did. Two copies of the app could still collide; one copy cannot.
 static BORROW: Mutex<()> = Mutex::new(());
 
+/// A headless output borrowed from the user's session, given back on drop.
+///
+/// A guard rather than a cleanup at the end of the happy path, because every
+/// way out of the capture has to return it: an error reading the monitor list,
+/// a `grim` that fails, a panic. A stray monitor left on someone's desktop is
+/// far worse than a missing backdrop, and the first version of this leaked one
+/// whenever the output could not be identified.
+struct Borrowed {
+    name: String,
+    /// The mode it came up in, which is what was photographed.
+    size: (u32, u32),
+}
+
+impl Drop for Borrowed {
+    fn drop(&mut self) {
+        let _ = hyprctl::run_args(&["output", "remove", &self.name]);
+    }
+}
+
+/// Add a headless output and wait for it to arrive.
+fn borrow_output() -> Result<Borrowed> {
+    // Two captures overlapping would each see the other's output in the diff
+    // below, so only one may be in flight; see `BORROW`.
+    let before: Vec<String> = names()?;
+    hyprctl::run_args(&["output", "create", "headless"])?;
+
+    // Give the output time to arrive and the wallpaper time to be drawn on it.
+    // A wallpaper daemon told to cover every output will follow; one pinned to
+    // a named monitor will not, and then the photograph comes back flat —
+    // which is what `looks_blank` is for.
+    std::thread::sleep(Duration::from_millis(900));
+
+    let found = hyprctl::monitors()?.into_iter().find(|m| !before.contains(&m.name));
+    match found {
+        Some(m) => Ok(Borrowed { name: m.name, size: (m.width, m.height) }),
+        // Nothing to give back, so no guard is built — but something did
+        // probably arrive late, and the next capture's diff would then adopt
+        // it. Remove by the name it would have had.
+        None => {
+            let _ = hyprctl::run_args(&["output", "remove", "HEADLESS-1"]);
+            Err(Error::other("the scratch output never arrived"))
+        }
+    }
+}
+
 /// Photograph the user's wallpaper into `dest`, without their windows on it.
 ///
 /// Runs against the session the app is in, not the preview's compositor — this
-/// is the desktop worth looking at. The output it makes is removed again even
-/// when the capture fails, because a stray monitor in someone's session is a
-/// far worse thing to leave behind than a missing backdrop.
-pub fn capture_desktop(dest: &Path) -> Result<()> {
-    // A poisoned lock means another capture panicked mid-borrow; the output it
-    // was holding is already lost, and refusing to ever capture again would
-    // not bring it back.
-    let _borrow = BORROW.lock().unwrap_or_else(|e| e.into_inner());
-
-    let before = names()?;
-    hyprctl::run_args(&["output", "create", "headless"])?;
-
-    // Give the new output time to arrive and the wallpaper time to be drawn on
-    // it. A wallpaper daemon told to cover every output will follow; one
-    // pinned to a named monitor will not, and then this comes back blank —
-    // which is why the caller treats a bad photograph as no photograph.
-    std::thread::sleep(Duration::from_millis(900));
-
-    names()
-        .map(|after| after.into_iter().find(|n| !before.contains(n)))
-        .and_then(|new| new.ok_or_else(|| Error::other("the scratch output never arrived")))
-        .and_then(|name| {
-            let result = grim(&name, dest);
-            let _ = hyprctl::run_args(&["output", "remove", &name]);
-            result
-        })
+/// is the desktop worth looking at. Returns the size of what was photographed.
+pub fn capture_desktop(dest: &Path) -> Result<(u32, u32)> {
+    let _borrow_lock = BORROW.lock().unwrap_or_else(|e| e.into_inner());
+    let output = borrow_output()?;
+    grim(&output.name, dest)?;
+    Ok(output.size)
 }
 
 fn grim(output: &str, dest: &Path) -> Result<()> {
@@ -147,15 +172,12 @@ pub fn capture_if_showable(dir: &Path) -> Option<()> {
     show_command(&image)?;
     let _ = std::fs::remove_file(&image);
 
-    let pixels = hyprctl::monitors()
-        .ok()?
-        .iter()
-        .map(|m| u64::from(m.width) * u64::from(m.height))
-        .max()
-        .unwrap_or(0);
-
-    capture_desktop(&image).ok()?;
-    if looks_blank(&image, pixels) {
+    // The size comes back from the output that was actually photographed. The
+    // user's own monitors are the wrong yardstick: the scratch output comes up
+    // in whatever mode the headless backend chooses, and on a large desktop
+    // that would set the floor far above what the capture could ever weigh.
+    let (width, height) = capture_desktop(&image).ok()?;
+    if looks_blank(&image, u64::from(width) * u64::from(height)) {
         let _ = std::fs::remove_file(&image);
         return None;
     }
