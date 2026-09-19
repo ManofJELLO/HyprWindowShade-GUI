@@ -295,6 +295,10 @@ disable, reload and remove, with everything it prints in a pane underneath. `hyp
 rebuilds the plugin against the Hyprland you are running, which takes minutes and is what you
 want after every Hyprland upgrade.
 
+![Plugin](docs/plugin.png)
+
+*After an update: what hyprpm printed, and what it left installed and loaded.*
+
 `hyprpm` escalates by itself — it refuses to run as root, and calls `sudo` for the steps that
 write outside your home directory: its plugin store under `/var/cache/hyprpm`, and the
 Hyprland headers. There is no terminal behind a window to type that password into, so:
