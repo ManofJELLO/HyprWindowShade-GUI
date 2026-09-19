@@ -29,7 +29,13 @@ check:
 	$(CARGO) clippy --all-targets -- -D warnings -A clippy::field_reassign_with_default
 	$(QMLLINT) -I target/cxxqt/qml_modules $(QML_FILES)
 
-install: release
+# No `release` prerequisite on purpose: this target is run under sudo, and a
+# build as root leaves root-owned artifacts in target/ that the next ordinary
+# `cargo build` cannot clean. Build first, as yourself, then install.
+install:
+	@test -x target/release/$(BIN) || { \
+		echo 'target/release/$(BIN) is missing - run `make release` first'; \
+		exit 1; }
 	install -Dm755 target/release/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -Dm644 packaging/$(BIN).desktop \
 		$(DESTDIR)$(PREFIX)/share/applications/$(BIN).desktop

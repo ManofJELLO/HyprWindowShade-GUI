@@ -93,6 +93,10 @@ sudo make install          # /usr/local by default
 make install PREFIX=~/.local
 ```
 
+`make install` only copies what is already in `target/release`; it never builds.
+Build as yourself first, or root's artifacts end up in `target/` and your next
+`cargo build` cannot clean them.
+
 An Arch `PKGBUILD` is in `packaging/`.
 
 ---
