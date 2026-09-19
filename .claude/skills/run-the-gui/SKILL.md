@@ -6,9 +6,9 @@ description: Launch hyprwindowshade-gui and see a change working — render ever
 # Running hyprwindowshade-gui
 
 The app is a Qt Quick front end. It does **not** need a compositor to run, and
-it should not borrow the user's screen: they work on this machine while Claude
-runs, so every check below is offscreen. See the user memory
-`warn-before-taking-screen-control` — ask first if you truly need a window.
+it should not borrow the screen of whoever is running it — they are probably
+using it — so every check below is offscreen. Ask first if you truly need a
+window.
 
 The binary is `target/debug/hyprwindowshade-gui` (not `hws-gui` — that is the
 crate name, and guessing it wastes a run).
@@ -35,7 +35,7 @@ To put the shots somewhere that is not the repo, run the binary directly with
 
 Warnings about the QML itself — shadowed properties, broken bindings, missing
 types — come from Qt's own logging categories, which are **off by default and
-do not reach the terminal** on this machine:
+do not reach the terminal** unless asked for:
 
 ```bash
 timeout 20 env QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
