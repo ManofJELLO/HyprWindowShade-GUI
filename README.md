@@ -26,6 +26,7 @@ palette is a small TOML file.
 - [Shader parameters](#shader-parameters)
 - [Themes](#themes)
 - [Importing rules you already wrote](#importing-rules-you-already-wrote)
+- [Installing the plugin](#installing-the-plugin)
 - [Settings](#settings)
 - [Command line](#command-line)
 - [How it is put together](#how-it-is-put-together)
@@ -37,7 +38,7 @@ palette is a small TOML file.
 
 ![Rules](docs/rules.png)
 
-Six pages down the left:
+Seven pages down the left:
 
 | Page | What it does |
 |---|---|
@@ -46,6 +47,7 @@ Six pages down the left:
 | **Layers** | `layershader`, `layeropenanim`, `layercloseanim` by namespace, with live namespaces offered. |
 | **Keybinds** | Toggle binds and session-start calls. |
 | **Preview** | Exactly the Lua that will be written, and the importer. |
+| **Plugin** | Installs, updates and reloads the plugin itself through `hyprpm`, and shows what it prints. |
 | **Settings** | Paths, how the block is written, theme, backups. |
 
 Nothing is written until you press **Save**.
@@ -286,6 +288,47 @@ looks like.
 
 ---
 
+## Installing the plugin
+
+The **Plugin** page drives `hyprpm`, Hyprland's plugin manager: install, update, enable,
+disable, reload and remove, with everything it prints in a pane underneath. `hyprpm update`
+rebuilds the plugin against the Hyprland you are running, which takes minutes and is what you
+want after every Hyprland upgrade.
+
+`hyprpm` escalates by itself — it refuses to run as root, and calls `sudo` for the steps that
+write outside your home directory: its plugin store under `/var/cache/hyprpm`, and the
+Hyprland headers. There is no terminal behind a window to type that password into, so:
+
+* the operation runs in a session of its own, started with `setsid`;
+* `SUDO_ASKPASS` points at this app, re-run as `hyprwindowshade-gui --askpass`;
+* sudo, having no terminal to read from, runs that helper instead;
+* the helper connects back to the window over a unix socket in
+  `$XDG_RUNTIME_DIR/hyprwindowshade-gui/`, which is created mode 0700;
+* what you type into the dialog goes straight back down the socket to sudo.
+
+The password is never written to disk, never appears in a command line or in the environment,
+and is held in memory only until the operation ends — a single operation escalates more than
+once (the state store first, then whatever else it has to write), and being asked twice for
+one click would be worse than useless.
+
+A wrong password is noticed and asked for again rather than spent. sudo allows three attempts
+and asks its askpass program once per attempt, but hyprpm captures the output of the command
+it escalates, so sudo's own "Sorry, try again" usually never reaches the log. What gives it
+away is that sudo asks a second time with nothing printed in between: hyprpm is blocked
+waiting, so a prompt with no progress since the last answer means that answer was refused.
+
+The pane is output, not a terminal: there is nothing to type into it, which is the whole
+reason the password has a dialog of its own.
+
+**Run in a terminal** runs the same operation in a terminal emulator instead — `$TERMINAL`,
+or the first of kitty, foot, alacritty, ghostty, wezterm, konsole, gnome-terminal and xterm —
+where sudo prompts the way it always has. That is the way out on a system where the askpass
+route does not apply, a `doas`-only machine for instance, since `doas` has no askpass.
+
+**Cancel** signals the whole process group, so a half-finished build stops with it.
+
+---
+
 ## Settings
 
 | Setting | Notes |
@@ -299,6 +342,8 @@ looks like.
 | Startup delay | See above. Zero unless you need it. |
 | Reload Hyprland after saving | Runs `hyprctl reload` so new rules apply without logging out. |
 | Reload shaders after editing one | Off by default — the plugin already reloads on mtime change. |
+| Repository | Where **Install** takes the plugin from. Default `https://github.com/ManofJELLO/HyprWindowShade`. |
+| Plugin name | What `hyprpm` calls it, which `enable`, `disable` and `remove` take. Default `HyprWindowShade`. |
 
 App settings live in `~/.config/hyprwindowshade-gui/settings.toml`. A malformed file is
 reported and ignored, never silently overwritten.
@@ -311,10 +356,12 @@ reported and ignored, never silently overwritten.
 hyprwindowshade-gui                 # the app
 hyprwindowshade-gui --print-state   # the whole state document as JSON
 hyprwindowshade-gui --print-block   # the Lua that would be written
+hyprwindowshade-gui --askpass       # sudo's askpass helper, for the Plugin page
 ```
 
 The two `--print-*` flags do not start Qt, which makes them useful on a machine where the GUI
-will not come up, and in a script.
+will not come up, and in a script. `--askpass` is for sudo to call, not for people: see
+[Installing the plugin](#installing-the-plugin).
 
 `HWS_SHOT_DIR=<dir>` renders each page to a PNG there and quits — how the screenshots in this
 README were made, and how the layout is checked without a compositor.
