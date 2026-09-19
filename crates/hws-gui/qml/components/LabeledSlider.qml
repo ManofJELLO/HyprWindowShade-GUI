@@ -16,7 +16,6 @@ Item {
     property real stepSize: 0.01
     property real value: 0
     property bool integer: false
-    property bool enabled: true
 
     signal moved(real value)
     signal settled(real value)
@@ -56,7 +55,6 @@ Item {
                 height: 26
                 implicitHeight: 26
                 mono: true
-                enabled: root.enabled
                 horizontalAlignment: Text.AlignRight
                 text: root.format(root.value)
                 onCommit: function (v) {
@@ -73,7 +71,6 @@ Item {
         Slider {
             id: slider
             width: parent.width
-            enabled: root.enabled
             from: root.from
             to: root.to
             stepSize: root.stepSize
