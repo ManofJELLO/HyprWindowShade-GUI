@@ -137,9 +137,20 @@ pub mod qobject {
         ///
         /// Returns at once: a compositor takes a few seconds to come up, so the
         /// work is on a thread and `previewRunning` says when it is ready.
+        ///
+        /// `background` is the pane's own colour, as `#rrggbb`: the preview
+        /// clears to it so the window appears to float on the app rather than
+        /// on a desktop of its own. It comes from QML because under the system
+        /// theme the real palette is Qt's, not the engine's.
         #[qinvokable]
         #[cxx_name = "previewStart"]
-        fn preview_start(self: Pin<&mut Backend>, path: &QString, width: i32, height: i32);
+        fn preview_start(
+            self: Pin<&mut Backend>,
+            path: &QString,
+            width: i32,
+            height: i32,
+            background: &QString,
+        );
 
         /// Tear the preview down.
         #[qinvokable]
@@ -179,6 +190,16 @@ use hws_core::hyprpm;
 use hws_core::preview::Preview;
 use hws_core::Session;
 use serde_json::{json, Value};
+
+/// A `#rrggbb` from QML as a plain 24-bit number.
+///
+/// Anything unreadable falls back to a dark grey, which is wrong but visible —
+/// the alternative is refusing to preview over a colour.
+fn parse_hex_rgb(text: &str) -> u32 {
+    u32::from_str_radix(text.trim().trim_start_matches('#'), 16)
+        .map(|v| v & 0x00ff_ffff)
+        .unwrap_or(0x1e_1e1e)
+}
 
 /// How long the demo window stays open before closing again.
 ///
@@ -343,18 +364,25 @@ impl qobject::Backend {
     // -----------------------------------------------------------------------
 
     /// Start previewing a shader.
-    pub fn preview_start(mut self: Pin<&mut Self>, path: &QString, width: i32, height: i32) {
+    pub fn preview_start(
+        mut self: Pin<&mut Self>,
+        path: &QString,
+        width: i32,
+        height: i32,
+        background: &QString,
+    ) {
         if self.as_ref().rust().preview_busy {
             return;
         }
 
         let path = path.to_string();
         let size = (width.max(1) as u32, height.max(1) as u32);
+        let background = parse_hex_rgb(&background.to_string());
 
         // Built here, on the Qt thread, because only the session knows what is
         // staged — and the session must not be touched from the worker.
         let request = match self.as_mut().rust_mut().session.as_ref() {
-            Some(session) => session.preview_request(&path, size, HOLD_SECS),
+            Some(session) => session.preview_request(&path, size, HOLD_SECS, background),
             None => Err(hws_core::Error::other("the backend is still starting up")),
         };
         let request = match request {

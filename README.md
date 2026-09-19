@@ -75,8 +75,8 @@ Hyprland does not have to be running. Without it the app still edits your config
 shaders; it just cannot offer you the list of open window classes or live layer namespaces,
 and the "Try it" buttons and the shader preview are disabled.
 
-The preview additionally wants `grim`, to read frames out of the compositor it starts, and
-`swaybg` or `wbg` for its backdrop. Neither is needed for anything else in the app.
+The preview additionally wants `grim`, to read frames out of the compositor it starts. It is
+not needed for anything else in the app.
 
 ## Build and install
 
@@ -259,13 +259,21 @@ wrong, because it is the same code doing the same job.
 
 The preview renders a **copy** of your shader carrying whatever you have staged,
 so the sliders move and the window changes while your own file sits untouched
-until you press **Save shader**. The window opens, holds for ten seconds and
-closes again on a loop, because an open or close shader only exists during that
-transition — a preview of a window already open would show you nothing of it.
-Rounding, gaps, borders, opacity, blur and your own animation curves are read
-back from your running session, so the window in the pane is shaped like the
-windows around it, and it sits on a light-to-dark gradient, which is the only way
-to tell whether a dissolve really reaches zero alpha.
+until you press **Save shader**. Rounding, gaps, borders, opacity, blur and your
+own animation curves are read back from your running session, so the window in
+the pane is shaped like the windows around it, and the compositor clears to the
+pane's own colour, so it looks like a window floating on the app rather than a
+picture of somebody else's desktop.
+
+The window **opens, holds, is shoved aside, and closes**, on a loop, because a
+shader is only visible during the phase it was written for and the preview
+should not make you guess which one that is. It reads the phase off the shader
+and tags it accordingly: one that drives itself from `progress` goes on open and
+close, one that reads velocity or a move delta goes on move and resize, and
+anything else goes on the plain tag and is visible throughout. The shove is a
+second window opening beside the first, which is a real move and a real resize
+with real velocity behind them — the only thing that makes a wobble show
+anything at all.
 
 Nothing appears on your screen. A nested compositor normally opens a window of
 its own; this one is given a headless output and then has that window taken away,
@@ -275,8 +283,7 @@ without getting the chance, the preview notices that it has been orphaned and
 exits by itself a couple of seconds later.
 
 It needs Hyprland running to nest inside, the plugin installed, and `grim` to
-read frames out. `swaybg` or `wbg` draws the gradient; without one you get a flat
-background and nothing else changes. The button says which of these is missing.
+read frames out. The button says when one of those is missing.
 
 ---
 

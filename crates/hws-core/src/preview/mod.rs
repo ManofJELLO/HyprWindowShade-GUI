@@ -17,11 +17,16 @@
 //! * **It never touches their files.** The shader it renders is a copy in a
 //!   runtime directory, written from whatever is staged in the app — which is
 //!   how a preview can show an edit that has not been saved.
+//! * **It has no backdrop of its own.** The compositor clears to the colour of
+//!   the pane it is shown in, so the window appears to float on the app rather
+//!   than on a second desktop behind it. True transparency would be better
+//!   still and is not available: on a headless output an opaque window is
+//!   captured with zero alpha, with or without the plugin, so the frame would
+//!   come back empty.
 //! * **It looks like their desktop.** Rounding, gaps, borders, opacity, blur
 //!   and their own animation curves are read from the running compositor with
 //!   `hyprctl`, so the window in the pane is shaped like the windows around it.
 
-pub mod backdrop;
 pub mod config;
 pub mod look;
 
@@ -54,20 +59,28 @@ pub struct Request {
     pub source: String,
     /// True when the shader drives itself from `progress`.
     pub is_animation: bool,
+    /// True when it reads velocity or a move delta, and so needs the window to
+    /// actually go somewhere before it shows anything.
+    pub is_motion_driven: bool,
     /// The plugin `.so` to load.
     pub plugin_so: PathBuf,
     /// Pane size in pixels.
     pub size: (u32, u32),
     /// Seconds the demo window stays open before closing again.
     pub hold_secs: f32,
-    /// Whether the app is on a dark theme, so the backdrop matches.
-    pub dark: bool,
+    /// The colour the compositor clears to, as `0xRRGGBB`.
+    ///
+    /// The pane's own background, so the preview reads as part of the window
+    /// rather than as a picture of somewhere else. It comes from the UI and not
+    /// from the theme in the session, because under the `system` theme the
+    /// engine's palette is only a stand-in for the one Qt actually draws with.
+    pub background: u32,
 }
 
 impl Request {
-    /// The tag slot this shader should be previewed through.
-    pub fn slot(&self) -> TagSlot {
-        config::slot_for(self.is_animation, false)
+    /// The tag slots this shader should be previewed through.
+    pub fn slots(&self) -> Vec<TagSlot> {
+        config::slots_for(self.is_animation, self.is_motion_driven)
     }
 }
 
@@ -79,7 +92,6 @@ pub struct Preview {
 
 struct Running {
     compositor: Child,
-    backdrop: Option<Child>,
     signature: String,
     socket: String,
     shader: PathBuf,
@@ -150,10 +162,10 @@ impl Preview {
 
         let cfg = PreviewConfig {
             shader: shader.to_string_lossy().into_owned(),
-            slot: request.slot(),
+            slots: request.slots(),
             demo_class: ".*".into(),
             plugin_so: request.plugin_so.to_string_lossy().into_owned(),
-            background: if request.dark { 0x121216 } else { 0x303038 },
+            background: request.background,
             size: (request.size.0.max(160), request.size.1.max(120)),
             app_pid: std::process::id(),
             look,
@@ -176,7 +188,6 @@ impl Preview {
         let stop = Arc::new(AtomicBool::new(false));
         let mut running = Running {
             compositor,
-            backdrop: None,
             signature,
             socket,
             shader,
@@ -190,11 +201,6 @@ impl Preview {
             running.shut_down();
             return Err(e);
         }
-
-        // Only now: the gradient is a layer surface, and before this there was
-        // an output about to be taken away for it to bind to.
-        running.backdrop = backdrop::prepare(&dir, request.dark)
-            .and_then(|(program, args)| spawn_on_socket(&running.socket, program, args));
 
         running.demo = Some(spawn_demo_loop(running.socket.clone(), request.hold_secs, stop));
         self.running = Some(running);
@@ -265,10 +271,6 @@ impl Running {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.demo.take() {
             let _ = handle.join();
-        }
-        if let Some(mut backdrop) = self.backdrop.take() {
-            let _ = backdrop.kill();
-            let _ = backdrop.wait();
         }
         let _ = self.compositor.kill();
         let _ = self.compositor.wait();
@@ -342,6 +344,10 @@ fn go_headless(signature: &str) -> Result<()> {
 /// nothing at all of it. A steady shader is served just as well.
 fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     let hold = Duration::from_secs_f32(hold_secs.clamp(1.0, 60.0));
+    // The still half of the cycle is split around the nudge, so the steady
+    // state is seen before the window is disturbed and again after it settles.
+    let still = hold.mul_f32(0.4);
+    let moving = hold.mul_f32(0.2);
 
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
@@ -352,7 +358,22 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
                 continue;
             };
 
-            sleep_unless_stopped(hold, &stop);
+            // Open, then hold: the open animation, then the steady state.
+            sleep_unless_stopped(still, &stop);
+
+            // Then make it move. A second window is the whole trick: tiling it
+            // shoves the first one aside, which is a real move and a real
+            // resize with real velocity behind them — the only thing that makes
+            // a wobble shader show anything at all. Dispatching a move instead
+            // would mean talking Lua to the compositor for something two more
+            // processes do by themselves.
+            let mut neighbour = spawn_demo_client(&socket);
+            sleep_unless_stopped(moving, &stop);
+            if let Some(mut neighbour) = neighbour.take() {
+                let _ = neighbour.kill();
+                let _ = neighbour.wait();
+            }
+            sleep_unless_stopped(still, &stop);
 
             // SIGTERM rather than SIGKILL: a terminal closes its window on the
             // way out, which is what makes the close animation — and any close
@@ -445,23 +466,31 @@ mod tests {
             original: PathBuf::from("/home/me/.config/hypr/shaders/dim.glsl"),
             source: "const float DIM = 0.5;\n".into(),
             is_animation: false,
+            is_motion_driven: false,
             plugin_so: PathBuf::from("/nowhere/HyprWindowShade.so"),
             size: (640, 400),
             hold_secs: 10.0,
-            dark: true,
+            background: 0x1e1e2e,
         }
     }
 
     #[test]
     fn a_steady_shader_previews_on_the_plain_tag() {
-        assert_eq!(request().slot(), TagSlot::Shader);
+        assert_eq!(request().slots(), vec![TagSlot::Shader]);
     }
 
     #[test]
-    fn an_animation_previews_on_the_open_tag() {
+    fn an_animation_previews_on_both_ends_of_the_cycle() {
         let mut r = request();
         r.is_animation = true;
-        assert_eq!(r.slot(), TagSlot::Open);
+        assert_eq!(r.slots(), vec![TagSlot::Open, TagSlot::Close]);
+    }
+
+    #[test]
+    fn a_motion_shader_previews_on_move_and_resize() {
+        let mut r = request();
+        r.is_motion_driven = true;
+        assert_eq!(r.slots(), vec![TagSlot::Move, TagSlot::Resize]);
     }
 
     #[test]

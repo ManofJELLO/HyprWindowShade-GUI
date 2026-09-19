@@ -56,10 +56,11 @@ fn a_preview_runs_and_answers_to_an_edit() {
         original: PathBuf::from("/tmp/preview_live.glsl"),
         source: SHADER.to_string(),
         is_animation: false,
+        is_motion_driven: false,
         plugin_so: plugin_so(),
         size: (760, 480),
         hold_secs: 10.0,
-        dark: true,
+        background: 0x1e1e2e,
     };
 
     preview.start(&request).expect("the preview should start");
@@ -99,11 +100,13 @@ fn the_demo_window_opens_holds_and_closes_again() {
         original: PathBuf::from("/tmp/preview_cycle.glsl"),
         source: SHADER.to_string(),
         is_animation: false,
+        is_motion_driven: false,
         plugin_so: plugin_so(),
         size: (400, 260),
-        // Clamped to a one-second floor, so the whole cycle fits in this test.
-        hold_secs: 0.0,
-        dark: true,
+        // Short, so a whole cycle — open, hold, nudge, hold, close — fits in
+        // the frames captured below.
+        hold_secs: 4.0,
+        background: 0x1e1e2e,
     };
 
     preview.start(&request).expect("the preview should start");
@@ -111,7 +114,7 @@ fn the_demo_window_opens_holds_and_closes_again() {
     // A window that opens, holds and closes cannot produce the same frame
     // throughout; a loop that has stalled with the window up will.
     let mut frames: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..14 {
+    for _ in 0..16 {
         if let Ok(path) = preview.capture() {
             if let Ok(bytes) = std::fs::read(path) {
                 frames.push(bytes);
@@ -124,9 +127,10 @@ fn the_demo_window_opens_holds_and_closes_again() {
     let distinct = frames.iter().filter(|f| **f != frames[0]).count();
     assert!(distinct > 0, "every frame was identical, so the demo loop never cycled");
 
-    std::fs::write(out_dir().join("preview-cycle-first.png"), &frames[0]).unwrap();
-    let last_different = frames.iter().rfind(|f| **f != frames[0]).unwrap();
-    std::fs::write(out_dir().join("preview-cycle-other.png"), last_different).unwrap();
+    // A filmstrip to look through when something about the cycle is wrong.
+    for (i, frame) in frames.iter().enumerate() {
+        std::fs::write(out_dir().join(format!("cycle-{i:02}.png")), frame).unwrap();
+    }
 
     preview.stop();
 }

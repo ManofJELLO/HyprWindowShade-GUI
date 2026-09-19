@@ -30,7 +30,10 @@ Item {
     implicitHeight: 300
 
     function start() {
-        App.previewStart(pane.shaderPath, pane.captureWidth, pane.captureHeight)
+        // The pane's own colour, so the frame's empty space and the pane it is
+        // drawn on are the same shade and the seam disappears.
+        App.previewStart(pane.shaderPath, pane.captureWidth, pane.captureHeight,
+                         Theme.bgAlt)
     }
 
     // Leaving the page, closing the app or picking another shader all have to

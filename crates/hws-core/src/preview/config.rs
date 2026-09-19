@@ -21,7 +21,11 @@ pub struct PreviewConfig {
     /// The temporary `.glsl` the rule points at.
     pub shader: String,
     /// Which of the plugin's tags to apply it through.
-    pub slot: TagSlot,
+    ///
+    /// More than one, because a shader is only visible in the phases its tags
+    /// cover and the preview should not make the user guess which phase they
+    /// are meant to be watching.
+    pub slots: Vec<TagSlot>,
     /// Class pattern the rule matches.
     ///
     /// `.*` by default, and that is not laziness: a preview instance holds
@@ -170,14 +174,22 @@ fn emit_look(out: &mut String, cfg: &PreviewConfig) {
 fn emit_rule(out: &mut String, cfg: &PreviewConfig) {
     out.push_str("-- The shader under test. The plugin reloads a shader when its mtime\n");
     out.push_str("-- changes, so rewriting the file below is what makes a slider live.\n");
-    out.push_str("hl.window_rule({\n");
-    out.push_str("    name  = \"hws-preview\",\n");
-    out.push_str(&format!("    match = {{ class = {} }},\n", lua_quote(&cfg.demo_class)));
-    out.push_str(&format!(
-        "    tag   = {},\n",
-        lua_quote(&format!("+{}:{}", cfg.slot.info().key, cfg.shader))
-    ));
-    out.push_str("})\n\n");
+    out.push_str("--\n");
+    out.push_str("-- One rule per tag, the way the app writes them into your own config:\n");
+    out.push_str("-- Hyprland's rule takes a single tag and the plugin stacks the ones that\n");
+    out.push_str("-- match the same window.\n");
+
+    for slot in &cfg.slots {
+        out.push_str("\nhl.window_rule({\n");
+        out.push_str(&format!("    name  = \"hws-preview-{}\",\n", slot.info().key));
+        out.push_str(&format!("    match = {{ class = {} }},\n", lua_quote(&cfg.demo_class)));
+        out.push_str(&format!(
+            "    tag   = {},\n",
+            lua_quote(&format!("+{}:{}", slot.info().key, cfg.shader))
+        ));
+        out.push_str("})\n");
+    }
+    out.push('\n');
 }
 
 fn emit_startup(out: &mut String, cfg: &PreviewConfig) {
@@ -208,18 +220,35 @@ fn emit_startup(out: &mut String, cfg: &PreviewConfig) {
     out.push_str("end)\n");
 }
 
-/// Which tag a shader should be previewed through.
+/// Which tags a shader should be previewed through.
 ///
-/// A shader that drives itself from `progress` only exists during an open or a
-/// close, so previewing it as a steady `shader` would show a still frame of
-/// something that is entirely motion. Anything else is a continuous effect and
-/// belongs on the plain tag, where it is visible the whole time.
-pub fn slot_for(is_animation: bool, closing: bool) -> TagSlot {
-    match (is_animation, closing) {
-        (false, _) => TagSlot::Shader,
-        (true, false) => TagSlot::Open,
-        (true, true) => TagSlot::Close,
+/// A shader is only visible during the phases its tags cover, and the phase it
+/// was written for is written into the shader itself — so the preview reads it
+/// off rather than asking:
+///
+/// * one that drives itself from `progress` exists only during a transition, so
+///   it goes on **open and close**, and the demo loop provides both;
+/// * one driven by velocity or a move delta exists only while the window is
+///   going somewhere, so it goes on **move and resize**;
+/// * anything else is continuous and goes on the plain **shader** tag, where it
+///   is visible for the whole hold.
+///
+/// A shader can be more than one of these — a wobble that also fades in reads
+/// both `progress` and `velocity` — and then it gets all of the tags it earns.
+pub fn slots_for(is_animation: bool, is_motion_driven: bool) -> Vec<TagSlot> {
+    let mut slots = Vec::new();
+    if is_animation {
+        slots.push(TagSlot::Open);
+        slots.push(TagSlot::Close);
     }
+    if is_motion_driven {
+        slots.push(TagSlot::Move);
+        slots.push(TagSlot::Resize);
+    }
+    if slots.is_empty() {
+        slots.push(TagSlot::Shader);
+    }
+    slots
 }
 
 /// Where the preview's private files live.
@@ -247,7 +276,7 @@ mod tests {
     fn config() -> PreviewConfig {
         PreviewConfig {
             shader: "/run/user/1000/hyprwindowshade-gui/preview/dim.glsl".into(),
-            slot: TagSlot::Shader,
+            slots: vec![TagSlot::Shader],
             demo_class: "kitty".into(),
             plugin_so: "/var/cache/hyprpm/me/HyprWindowShade/HyprWindowShade.so".into(),
             background: 0x1e1e2e,
@@ -270,16 +299,28 @@ mod tests {
     }
 
     #[test]
-    fn an_animation_shader_is_previewed_through_the_open_tag() {
+    fn a_shader_is_previewed_through_the_tags_it_earns() {
+        assert_eq!(slots_for(false, false), vec![TagSlot::Shader]);
+        assert_eq!(slots_for(true, false), vec![TagSlot::Open, TagSlot::Close]);
+        assert_eq!(slots_for(false, true), vec![TagSlot::Move, TagSlot::Resize]);
+        assert_eq!(
+            slots_for(true, true),
+            vec![TagSlot::Open, TagSlot::Close, TagSlot::Move, TagSlot::Resize]
+        );
+    }
+
+    #[test]
+    fn every_tag_gets_a_rule_of_its_own() {
         let mut cfg = config();
-        cfg.slot = slot_for(true, false);
-        assert!(render(&cfg).contains("+shader_open:"));
+        cfg.slots = slots_for(true, false);
 
-        cfg.slot = slot_for(true, true);
-        assert!(render(&cfg).contains("+shader_close:"));
-
-        cfg.slot = slot_for(false, true);
-        assert!(render(&cfg).contains("+shader:"));
+        let out = render(&cfg);
+        assert!(out.contains("+shader_open:"), "{out}");
+        assert!(out.contains("+shader_close:"), "{out}");
+        assert_eq!(out.matches("hl.window_rule({").count(), 2);
+        // A plain `shader` tag would leave a progress-driven effect frozen
+        // on screen for the whole hold.
+        assert!(!out.contains(r#"tag   = "+shader:"#), "{out}");
     }
 
     #[test]

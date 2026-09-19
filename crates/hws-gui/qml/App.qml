@@ -130,9 +130,12 @@ QtObject {
     readonly property bool previewRunning: app.backend ? app.backend.previewRunning : false
     readonly property string previewShader: app.backend ? app.backend.previewShader : ""
 
-    function previewStart(path, width, height) {
+    // `background` is what the preview clears to, so the window in it looks
+    // like it is sitting on this pane rather than on a desktop of its own.
+    function previewStart(path, width, height, background) {
         if (app.backend)
-            app.backend.previewStart(path, Math.round(width), Math.round(height))
+            app.backend.previewStart(path, Math.round(width), Math.round(height),
+                                     String(background))
     }
 
     function previewStop() {

@@ -913,6 +913,7 @@ impl Session {
         path: &str,
         size: (u32, u32),
         hold_secs: f32,
+        background: u32,
     ) -> Result<preview::Request> {
         let expanded = paths::expand(path);
         let key = expanded.to_string_lossy().into_owned();
@@ -929,10 +930,11 @@ impl Session {
             original: expanded.clone(),
             source: self.shader_preview_source(path)?,
             is_animation: info.is_animation(),
+            is_motion_driven: info.is_motion_driven(),
             plugin_so,
             size,
             hold_secs,
-            dark: self.theme.dark,
+            background,
         })
     }
 
