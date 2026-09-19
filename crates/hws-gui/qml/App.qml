@@ -78,6 +78,43 @@ QtObject {
             app.backend.refresh()
     }
 
+    // --- hyprpm -------------------------------------------------------------
+    //
+    // The plugin manager is the one thing the app drives that takes minutes
+    // and can stop to ask for a password, so it has its own small surface
+    // rather than going through `run`.
+
+    readonly property bool hyprpmBusy: app.backend ? app.backend.hyprpmBusy : false
+    readonly property string hyprpmLabel: app.backend ? app.backend.hyprpmLabel : ""
+
+    // `op` is add, remove, enable, disable, update or reload. The argument is
+    // the repository URL or the plugin name, for the ones that need one.
+    function hyprpm(op, argument) {
+        if (app.backend)
+            app.backend.hyprpmRun(op, argument === undefined ? "" : argument)
+    }
+
+    function hyprpmCancel() {
+        if (app.backend)
+            app.backend.hyprpmCancel()
+    }
+
+    function hyprpmInTerminal(op, argument) {
+        if (app.backend)
+            app.backend.hyprpmOpenTerminal(op, argument === undefined ? "" : argument)
+    }
+
+    // What hyprpm has installed. Cheap enough to ask for directly.
+    function hyprpmStatus() {
+        if (!app.backend)
+            return ({ installed: false, plugins: [] })
+        try {
+            return JSON.parse(app.backend.hyprpmStatus())
+        } catch (e) {
+            return ({ installed: false, plugins: [] })
+        }
+    }
+
     // Asks the compositor what is on screen without blocking the interface.
     // The answer lands in `state` when it arrives.
     function refreshLive() {

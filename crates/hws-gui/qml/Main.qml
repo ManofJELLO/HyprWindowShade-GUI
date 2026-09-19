@@ -8,8 +8,10 @@ ApplicationWindow {
 
     width: 1180
     height: 780
-    minimumWidth: 900
-    minimumHeight: 560
+    // Low enough to sit in a tile on a short screen. Every page scrolls, so
+    // a small window loses nothing but the amount visible at once.
+    minimumWidth: 720
+    minimumHeight: 400
     visible: true
     title: "HyprWindowShade" + (App.dirty ? " — unsaved changes" : "")
     color: Theme.bg
@@ -30,6 +32,7 @@ ApplicationWindow {
         { label: "Layers",   hint: "Bars, launchers" },
         { label: "Keybinds", hint: "And startup" },
         { label: "Preview",  hint: "And import" },
+        { label: "Plugin",   hint: "Install, update" },
         { label: "Settings", hint: "" }
     ]
 
@@ -58,6 +61,12 @@ ApplicationWindow {
         function onNotify(message, isError) {
             toast.show(message, isError)
         }
+
+        // hyprpm escalates by itself and, with no terminal to read from, sudo
+        // asks this app for the password. See components/PasswordDialog.qml.
+        function onHyprpmPasswordRequested(prompt, retry) {
+            password.ask(prompt, retry)
+        }
     }
 
     // The compositor's window list changes while the app is open, so the
@@ -78,7 +87,23 @@ ApplicationWindow {
 
     // Nothing here is written to disk until Save, so closing with unsaved work
     // loses it silently. The title bar says so; that is not enough.
+    //
+    // A running hyprpm operation is the other thing worth stopping for: it
+    // carries on in a session of its own, but with this window gone there is
+    // nobody left to answer sudo if it asks again.
     onClosing: function (close) {
+        if (App.hyprpmBusy && !window.hyprpmCloseConfirmed) {
+            close.accepted = false
+            confirm.ask("Close while hyprpm is working?",
+                        App.hyprpmLabel + " is still running. It will carry on without this "
+                        + "window, but if it needs your password again it will fail.",
+                        "Close anyway", true,
+                        function () {
+                            window.hyprpmCloseConfirmed = true
+                            window.close()
+                        })
+            return
+        }
         if (App.dirty && !window.quitConfirmed) {
             close.accepted = false
             confirm.ask("Close without saving?",
@@ -93,6 +118,7 @@ ApplicationWindow {
     }
 
     property bool quitConfirmed: false
+    property bool hyprpmCloseConfirmed: false
 
     Shortcut {
         sequences: [StandardKey.Save]
@@ -337,6 +363,12 @@ ApplicationWindow {
                 }
             }
             Item {
+                PluginPage {
+                    anchors.fill: parent
+                    anchors.margins: Theme.pad
+                }
+            }
+            Item {
                 SettingsPage {
                     anchors.fill: parent
                     anchors.margins: Theme.pad
@@ -355,6 +387,15 @@ ApplicationWindow {
     // Above the toast: a question has to be answerable even while one is up.
     ConfirmDialog {
         id: confirm
+    }
+
+    // Above everything: sudo is waiting for this one.
+    PasswordDialog {
+        id: password
+        onAnswered: function (value) {
+            Backend.hyprpmAnswerPassword(value)
+        }
+        onRefused: Backend.hyprpmCancelPassword()
     }
 
     // Development aid: with HWS_SHOT_DIR set, render each page to a PNG there

@@ -7,6 +7,25 @@ pub mod bridge;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn main() {
+    // sudo re-runs this program with `--askpass` when a hyprpm operation needs
+    // a password: it asks the window that started the operation, prints the
+    // answer, and exits. It must come before anything that would put a second
+    // copy of the interface on screen.
+    // The socket variable is set only on the process a hyprpm job runs, so
+    // anything started underneath one that is us is an askpass call, whether
+    // or not the flag survived. Without this, sudo running this executable
+    // directly would put a second interface on screen instead of answering.
+    let args: Vec<String> = std::env::args().collect();
+    let flagged = args.iter().position(|a| a == "--askpass");
+    if flagged.is_some() || std::env::var_os("HWS_ASKPASS_SOCKET").is_some() {
+        let prompt = match flagged {
+            Some(index) => args.get(index + 1).map(String::as_str),
+            // sudo passes the prompt as the only argument.
+            None => args.get(1).map(String::as_str),
+        };
+        std::process::exit(hws_core::hyprpm::askpass(prompt.unwrap_or("Password:")));
+    }
+
     // `--print-state` loads everything and dumps the state document without
     // starting Qt. Useful for checking what the app sees on a machine where the
     // GUI will not start, and for testing in CI.

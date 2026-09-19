@@ -7,6 +7,9 @@
 //! * `query(what, payloadJson)` — read something that is not part of the state,
 //!   such as the generated Lua preview.
 //! * `notify(message, isError)` — a signal for the toast.
+//! * a small group of `hyprpm*` members, which are the one thing here that is
+//!   not part of the configuration: a long-running external command, its
+//!   output, and the password it asks for.
 //!
 //! Keeping the surface this small means the UI holds no configuration logic,
 //! and the engine stays testable without Qt.
@@ -28,6 +31,8 @@ pub mod qobject {
         #[qproperty(QString, state_json, cxx_name = "stateJson")]
         #[qproperty(bool, ready)]
         #[qproperty(QString, shot_dir, cxx_name = "shotDir")]
+        #[qproperty(bool, hyprpm_busy, cxx_name = "hyprpmBusy")]
+        #[qproperty(QString, hyprpm_label, cxx_name = "hyprpmLabel")]
         type Backend = super::BackendRust;
     }
 
@@ -36,6 +41,29 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "notify"]
         fn notify(self: Pin<&mut Backend>, message: &QString, is_error: bool);
+
+        /// One line of output from the running hyprpm operation.
+        ///
+        /// `transient` marks a progress bar redrawn in place: it should
+        /// replace the line before it rather than pile up under it.
+        #[qsignal]
+        #[cxx_name = "hyprpmOutput"]
+        fn hyprpm_output(self: Pin<&mut Backend>, line: &QString, transient: bool);
+
+        /// An operation has started; the argument is what to call it.
+        #[qsignal]
+        #[cxx_name = "hyprpmStarted"]
+        fn hyprpm_started(self: Pin<&mut Backend>, label: &QString);
+
+        /// An operation has ended.
+        #[qsignal]
+        #[cxx_name = "hyprpmFinished"]
+        fn hyprpm_finished(self: Pin<&mut Backend>, ok: bool, message: &QString);
+
+        /// sudo is asking for the password. `retry` means the last one was wrong.
+        #[qsignal]
+        #[cxx_name = "hyprpmPasswordRequested"]
+        fn hyprpm_password_requested(self: Pin<&mut Backend>, prompt: &QString, retry: bool);
     }
 
     extern "RustQt" {
@@ -64,6 +92,41 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshLive"]
         fn refresh_live(self: Pin<&mut Backend>);
+
+        /// Start a hyprpm operation: `add`, `remove`, `enable`, `disable`,
+        /// `update` or `reload`. `argument` is the URL or plugin name the
+        /// first four need, and is ignored by the others.
+        ///
+        /// Returns at once. Everything it does arrives as `hyprpmOutput`,
+        /// `hyprpmPasswordRequested` and `hyprpmFinished`.
+        #[qinvokable]
+        #[cxx_name = "hyprpmRun"]
+        fn hyprpm_run(self: Pin<&mut Backend>, op: &QString, argument: &QString);
+
+        /// Answer the password prompt.
+        #[qinvokable]
+        #[cxx_name = "hyprpmAnswerPassword"]
+        fn hyprpm_answer_password(self: Pin<&mut Backend>, password: &QString);
+
+        /// Refuse the password prompt, which ends the operation.
+        #[qinvokable]
+        #[cxx_name = "hyprpmCancelPassword"]
+        fn hyprpm_cancel_password(self: Pin<&mut Backend>);
+
+        /// Stop the running operation.
+        #[qinvokable]
+        #[cxx_name = "hyprpmCancel"]
+        fn hyprpm_cancel(self: Pin<&mut Backend>);
+
+        /// What hyprpm has installed, as JSON.
+        #[qinvokable]
+        #[cxx_name = "hyprpmStatus"]
+        fn hyprpm_status(self: &Backend) -> QString;
+
+        /// Run the operation in a terminal emulator instead of in this window.
+        #[qinvokable]
+        #[cxx_name = "hyprpmOpenTerminal"]
+        fn hyprpm_open_terminal(self: Pin<&mut Backend>, op: &QString, argument: &QString);
     }
 
     impl cxx_qt::Initialize for Backend {}
@@ -78,6 +141,7 @@ use core::pin::Pin;
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use hws_core::hyprpm;
 use hws_core::Session;
 use serde_json::{json, Value};
 
@@ -96,6 +160,12 @@ pub struct BackendRust {
     /// The timer fires every five seconds; if `hyprctl` ever takes longer than
     /// that, threads would pile up behind it.
     probing: bool,
+    /// True while a hyprpm operation is running.
+    hyprpm_busy: bool,
+    /// What that operation is called, for the header.
+    hyprpm_label: QString,
+    /// The running operation, kept so it can be answered and cancelled.
+    hyprpm_job: Option<hyprpm::Job>,
 }
 
 impl cxx_qt::Initialize for qobject::Backend {
@@ -208,6 +278,109 @@ impl qobject::Backend {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // hyprpm
+    //
+    // The only part of the app that drives something long-running and outside
+    // itself. It is deliberately not a `Session` command: it takes minutes,
+    // produces output as it goes, and stops halfway to ask for a password.
+    // -----------------------------------------------------------------------
+
+    /// Start a hyprpm operation, and report it back through the signals.
+    pub fn hyprpm_run(mut self: Pin<&mut Self>, op: &QString, argument: &QString) {
+        if self.as_ref().rust().hyprpm_busy {
+            let m = QString::from("hyprpm is already busy — wait for it, or cancel it");
+            self.as_mut().notify(&m, true);
+            return;
+        }
+
+        let op = match hyprpm::Op::parse(&op.to_string(), &argument.to_string()) {
+            Ok(op) => op,
+            Err(e) => {
+                let m = QString::from(&e.to_string());
+                self.as_mut().notify(&m, true);
+                return;
+            }
+        };
+
+        // sudo runs this executable again, with --askpass, to ask the window
+        // for the password.
+        let askpass = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                let m = QString::from(&format!("could not find this program on disk: {e}"));
+                self.as_mut().notify(&m, true);
+                return;
+            }
+        };
+
+        let label = op.label();
+        let thread = self.as_mut().qt_thread();
+        let started = hyprpm::Job::start(op, &askpass, move |event| {
+            // Fails only once the QObject is gone, and an operation whose
+            // window has closed has nowhere to report to anyway.
+            let _ = thread.queue(move |backend| deliver(backend, event));
+        });
+
+        match started {
+            Ok(job) => {
+                self.as_mut().rust_mut().hyprpm_job = Some(job);
+                self.as_mut().set_hyprpm_busy(true);
+                self.as_mut().set_hyprpm_label(QString::from(&label));
+                let l = QString::from(&label);
+                self.as_mut().hyprpm_started(&l);
+            }
+            Err(e) => {
+                let m = QString::from(&e.to_string());
+                self.as_mut().notify(&m, true);
+            }
+        }
+    }
+
+    /// Hand the running operation the password sudo asked for.
+    pub fn hyprpm_answer_password(self: Pin<&mut Self>, password: &QString) {
+        if let Some(job) = self.rust().hyprpm_job.as_ref() {
+            job.answer_password(&password.to_string());
+        }
+    }
+
+    /// Tell sudo there is no password, which ends the operation.
+    pub fn hyprpm_cancel_password(self: Pin<&mut Self>) {
+        if let Some(job) = self.rust().hyprpm_job.as_ref() {
+            job.deny_password();
+        }
+    }
+
+    /// Stop the running operation.
+    pub fn hyprpm_cancel(self: Pin<&mut Self>) {
+        if let Some(job) = self.rust().hyprpm_job.as_ref() {
+            job.cancel();
+        }
+    }
+
+    /// What hyprpm has installed.
+    pub fn hyprpm_status(&self) -> QString {
+        QString::from(&hyprpm::status().to_string())
+    }
+
+    /// Run the operation in a terminal emulator instead.
+    pub fn hyprpm_open_terminal(mut self: Pin<&mut Self>, op: &QString, argument: &QString) {
+        let op = match hyprpm::Op::parse(&op.to_string(), &argument.to_string()) {
+            Ok(op) => op,
+            Err(e) => {
+                let m = QString::from(&e.to_string());
+                self.as_mut().notify(&m, true);
+                return;
+            }
+        };
+        let message = match hyprpm::open_in_terminal(&op) {
+            Ok(()) => (format!("Running `hyprpm {}` in a terminal", op.args().join(" ")), false),
+            Err(e) => (e.to_string(), true),
+        };
+        let m = QString::from(&message.0);
+        self.as_mut().notify(&m, message.1);
+    }
+
     /// Serialise the session and hand it to QML.
     fn push_state(mut self: Pin<&mut Self>) {
         let json = match self.as_ref().rust().session.as_ref() {
@@ -225,4 +398,31 @@ fn parse_payload(text: &str) -> Value {
         return json!({});
     }
     serde_json::from_str(trimmed).unwrap_or_else(|_| json!({}))
+}
+
+/// Turn one thing that happened in a hyprpm job into signals, on the Qt thread.
+fn deliver(mut backend: Pin<&mut qobject::Backend>, event: hyprpm::Event) {
+    match event {
+        hyprpm::Event::Line { text, transient } => {
+            let line = QString::from(&text);
+            backend.as_mut().hyprpm_output(&line, transient);
+        }
+        hyprpm::Event::Password { prompt, retry } => {
+            let prompt = QString::from(&prompt);
+            backend.as_mut().hyprpm_password_requested(&prompt, retry);
+        }
+        hyprpm::Event::Finished { ok, message } => {
+            backend.as_mut().rust_mut().hyprpm_job = None;
+            backend.as_mut().set_hyprpm_busy(false);
+            backend.as_mut().set_hyprpm_label(QString::from(""));
+
+            let text = QString::from(&message);
+            backend.as_mut().hyprpm_finished(ok, &text);
+            backend.as_mut().notify(&text, !ok);
+
+            // Installing, enabling or reloading changes what the compositor
+            // has loaded, which the header badge is showing.
+            backend.refresh_live();
+        }
+    }
 }
