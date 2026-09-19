@@ -62,14 +62,6 @@ Item {
         }
     }
 
-    // Swapping the backdrop means a new compositor, and the old one needs a
-    // moment to let go of its socket first.
-    Timer {
-        id: restart
-        interval: 700
-        onTriggered: pane.start()
-    }
-
     Timer {
         // Ten frames a second: enough to read an animation, few enough that a
         // grim per frame stays out of the way.
@@ -118,10 +110,12 @@ Item {
                            + "wallpaper instead."
                 onClicked: {
                     pane.desktopBackdrop = !pane.desktopBackdrop
-                    if (pane.showingThis) {
-                        App.previewStop()
-                        restart.start()
-                    }
+                    // Straight to start, with no stop first: starting already
+                    // tears down whatever is running, and doing it here too
+                    // races — the stop runs on a thread of its own, so a slow
+                    // one could land after the new preview and kill it.
+                    if (pane.showingThis)
+                        pane.start()
                 }
             }
 

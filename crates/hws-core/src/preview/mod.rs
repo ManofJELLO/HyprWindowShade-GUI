@@ -109,7 +109,9 @@ struct Running {
     signature: String,
     socket: String,
     shader: PathBuf,
-    dir: PathBuf,
+    /// What was last written to `shader`, so an unchanged source is not
+    /// written again.
+    source: String,
     stop: Arc<AtomicBool>,
     demo: Option<JoinHandle<()>>,
     frame: PathBuf,
@@ -213,7 +215,7 @@ impl Preview {
             signature,
             socket,
             shader,
-            dir: dir.clone(),
+            source: request.source.clone(),
             stop: Arc::clone(&stop),
             demo: None,
             frame: dir.join("frame.png"),
@@ -242,11 +244,23 @@ impl Preview {
     /// This is the whole live-update mechanism: the plugin reloads a shader when
     /// its mtime changes, so writing the file is all it takes for the next frame
     /// to show the new values. No restart, and nothing to tell the compositor.
+    ///
+    /// Which is also why an unchanged source must not be written. The UI calls
+    /// this whenever anything at all changes in the application state — and
+    /// that includes the compositor probe that runs every five seconds, on its
+    /// own, forever. Writing every time would touch the mtime every time, and
+    /// the plugin would dutifully recompile a shader that had not changed,
+    /// for as long as the preview was open.
     pub fn set_source(&mut self, source: &str) -> Result<()> {
-        let Some(running) = &self.running else {
+        let Some(running) = &mut self.running else {
             return Ok(());
         };
-        paths::write_atomic(&running.shader, source)
+        if running.source == source {
+            return Ok(());
+        }
+        paths::write_atomic(&running.shader, source)?;
+        running.source = source.to_string();
+        Ok(())
     }
 
     /// Grab the current frame, returning the file it was written to.
@@ -308,11 +322,9 @@ impl Running {
         }
         let _ = self.compositor.kill();
         let _ = self.compositor.wait();
-        // The shader copy and the generated config are worth keeping until the
-        // next preview overwrites them: if one fails to start, they are the
-        // evidence of why.
-        let _ = &self.dir;
-        let _ = &self.signature;
+        // The shader copy, the generated config and the compositor's log are
+        // left in the runtime directory until the next preview overwrites
+        // them: when one fails to start, they are the evidence of why.
     }
 }
 

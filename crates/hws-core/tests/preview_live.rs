@@ -92,6 +92,27 @@ fn a_preview_runs_and_answers_to_an_edit() {
 
     assert_ne!(before, after, "editing the shader should change what is on screen");
 
+    // The UI pushes the staged source on every state change, and the state
+    // changes by itself every few seconds when the compositor is probed. If an
+    // unchanged source still reached the file, its mtime would move and the
+    // plugin would recompile the shader on a timer, forever.
+    let copy = preview.status().shader.expect("a shader path");
+    let touched_at = std::fs::metadata(&copy).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    preview.set_source(&edited).expect("writing the same source again");
+    assert_eq!(
+        std::fs::metadata(&copy).unwrap().modified().unwrap(),
+        touched_at,
+        "an unchanged source must not touch the file"
+    );
+
+    preview.set_source(SHADER).expect("writing a different source");
+    assert_ne!(
+        std::fs::metadata(&copy).unwrap().modified().unwrap(),
+        touched_at,
+        "a changed source must reach the file"
+    );
+
     preview.stop();
     assert!(!preview.is_running());
 }
