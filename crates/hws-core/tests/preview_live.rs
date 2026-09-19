@@ -7,6 +7,9 @@
 //! cargo test -p hws-core --test preview_live -- --ignored --nocapture
 //! ```
 //!
+//! Each test starts a compositor of its own, so they are cheaper and calmer
+//! one at a time: add `--test-threads=1` when watching what they do.
+//!
 //! `HWS_PLUGIN_SO` overrides where the plugin is looked for, and
 //! `HWS_PREVIEW_OUT` says where to leave the captured frames for inspection.
 
@@ -61,6 +64,7 @@ fn a_preview_runs_and_answers_to_an_edit() {
         size: (760, 480),
         hold_secs: 10.0,
         background: 0x1e1e2e,
+        desktop_backdrop: true,
     };
 
     preview.start(&request).expect("the preview should start");
@@ -107,6 +111,7 @@ fn the_demo_window_opens_holds_and_closes_again() {
         // the frames captured below.
         hold_secs: 4.0,
         background: 0x1e1e2e,
+        desktop_backdrop: true,
     };
 
     preview.start(&request).expect("the preview should start");

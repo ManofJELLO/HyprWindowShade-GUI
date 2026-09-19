@@ -261,9 +261,21 @@ The preview renders a **copy** of your shader carrying whatever you have staged,
 so the sliders move and the window changes while your own file sits untouched
 until you press **Save shader**. Rounding, gaps, borders, opacity, blur and your
 own animation curves are read back from your running session, so the window in
-the pane is shaped like the windows around it, and the compositor clears to the
-pane's own colour, so it looks like a window floating on the app rather than a
-picture of somebody else's desktop.
+the pane is shaped like the windows around it, and it stands on **your own
+wallpaper** — whether a dissolve really reaches zero alpha, or a tint lifts
+blacks, only shows against something with light and dark in it.
+
+Getting that picture without your windows in it is the one clever bit. The
+wallpaper is not read from a file: asking the wallpaper daemon which image it is
+showing works for some of them and not others, and means nothing at all for a
+video wallpaper or a shuffling directory. Instead the preview borrows a headless
+output on your session for a second — it arrives with an empty workspace and
+your wallpaper already drawn on it — photographs that, and gives it back.
+Nothing appears on your screen, nothing of yours moves, and what comes back is
+your wallpaper and nothing else. If your wallpaper daemon is pinned to a named
+monitor it will not follow onto that scratch output, and the preview quietly
+falls back to the pane's own colour. **On your wallpaper** in the pane's header
+switches between the two.
 
 The window **opens, holds, is shoved aside, and closes**, on a loop, because a
 shader is only visible during the phase it was written for and the preview

@@ -26,6 +26,9 @@ Item {
     readonly property bool showingThis: App.previewRunning
                                         && App.previewShader === pane.shaderPath
 
+    // Stand the window on the user's own wallpaper, or on the pane's colour.
+    property bool desktopBackdrop: true
+
     implicitWidth: 380
     implicitHeight: 300
 
@@ -33,7 +36,7 @@ Item {
         // The pane's own colour, so the frame's empty space and the pane it is
         // drawn on are the same shade and the seam disappears.
         App.previewStart(pane.shaderPath, pane.captureWidth, pane.captureHeight,
-                         Theme.bgAlt)
+                         Theme.bgAlt, pane.desktopBackdrop)
     }
 
     // Leaving the page, closing the app or picking another shader all have to
@@ -57,6 +60,14 @@ Item {
             if (pane.showingThis)
                 App.previewUpdate(pane.shaderPath)
         }
+    }
+
+    // Swapping the backdrop means a new compositor, and the old one needs a
+    // moment to let go of its socket first.
+    Timer {
+        id: restart
+        interval: 700
+        onTriggered: pane.start()
     }
 
     Timer {
@@ -95,6 +106,23 @@ Item {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            PillButton {
+                compact: true
+                text: pane.desktopBackdrop ? "On your wallpaper" : "On a plain colour"
+                tooltip: pane.desktopBackdrop
+                         ? "Standing on your own wallpaper, photographed without any of your "
+                           + "windows in the way. Click for a plain colour instead."
+                         : "Standing on the pane's own colour. Click to stand it on your "
+                           + "wallpaper instead."
+                onClicked: {
+                    pane.desktopBackdrop = !pane.desktopBackdrop
+                    if (pane.showingThis) {
+                        App.previewStop()
+                        restart.start()
+                    }
+                }
             }
 
             PillButton {

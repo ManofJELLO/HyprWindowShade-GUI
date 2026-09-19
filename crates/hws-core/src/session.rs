@@ -914,6 +914,7 @@ impl Session {
         size: (u32, u32),
         hold_secs: f32,
         background: u32,
+        desktop_backdrop: bool,
     ) -> Result<preview::Request> {
         let expanded = paths::expand(path);
         let key = expanded.to_string_lossy().into_owned();
@@ -935,6 +936,7 @@ impl Session {
             size,
             hold_secs,
             background,
+            desktop_backdrop,
         })
     }
 

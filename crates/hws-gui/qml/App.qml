@@ -132,10 +132,10 @@ QtObject {
 
     // `background` is what the preview clears to, so the window in it looks
     // like it is sitting on this pane rather than on a desktop of its own.
-    function previewStart(path, width, height, background) {
+    function previewStart(path, width, height, background, desktopBackdrop) {
         if (app.backend)
             app.backend.previewStart(path, Math.round(width), Math.round(height),
-                                     String(background))
+                                     String(background), desktopBackdrop === true)
     }
 
     function previewStop() {

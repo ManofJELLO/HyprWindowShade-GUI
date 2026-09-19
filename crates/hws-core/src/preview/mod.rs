@@ -17,18 +17,23 @@
 //! * **It never touches their files.** The shader it renders is a copy in a
 //!   runtime directory, written from whatever is staged in the app — which is
 //!   how a preview can show an edit that has not been saved.
-//! * **It has no backdrop of its own.** The compositor clears to the colour of
-//!   the pane it is shown in, so the window appears to float on the app rather
-//!   than on a second desktop behind it. True transparency would be better
-//!   still and is not available: on a headless output an opaque window is
-//!   captured with zero alpha, with or without the plugin, so the frame would
-//!   come back empty.
+//! * **It stands on the user's own wallpaper**, photographed without any of
+//!   their windows in the way — see [`wallpaper`] for how. Whether a dissolve
+//!   really reaches zero alpha only shows against something with light and dark
+//!   in it, and a flat colour shows nothing. Failing that — no screenshot tool,
+//!   nothing to show it with, a wallpaper that could not be photographed — the
+//!   compositor clears to the colour of the pane instead, and the window
+//!   appears to float on the app. True transparency would be better than either
+//!   and is not available: on a headless output an opaque window is captured
+//!   with zero alpha, with or without the plugin, so the frame would come back
+//!   empty.
 //! * **It looks like their desktop.** Rounding, gaps, borders, opacity, blur
 //!   and their own animation curves are read from the running compositor with
 //!   `hyprctl`, so the window in the pane is shaped like the windows around it.
 
 pub mod config;
 pub mod look;
+pub mod wallpaper;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -68,6 +73,14 @@ pub struct Request {
     pub size: (u32, u32),
     /// Seconds the demo window stays open before closing again.
     pub hold_secs: f32,
+    /// Whether to stand the preview on a photograph of the user's desktop.
+    ///
+    /// Off means the flat `background` colour instead. It is a choice worth
+    /// leaving open: the photograph is the whole screen, windows and all,
+    /// because there is no way to capture the wallpaper layer on its own, and
+    /// whether that reads as useful context or as clutter depends on the
+    /// desktop and on the shader.
+    pub desktop_backdrop: bool,
     /// The colour the compositor clears to, as `0xRRGGBB`.
     ///
     /// The pane's own background, so the preview reads as part of the window
@@ -92,6 +105,7 @@ pub struct Preview {
 
 struct Running {
     compositor: Child,
+    backdrop: Option<Child>,
     signature: String,
     socket: String,
     shader: PathBuf,
@@ -157,6 +171,13 @@ impl Preview {
         let shader = config::shader_path(&request.original);
         paths::write_atomic(&shader, &request.source)?;
 
+        // Before anything is started: for the moment between spawning a nested
+        // compositor and making it headless it has a window on the user's
+        // screen, and the photograph would catch the preview's own scaffolding.
+        if request.desktop_backdrop {
+            wallpaper::capture_if_showable(&dir);
+        }
+
         let mut look = Look::from_host();
         look.prune_curves();
 
@@ -188,6 +209,7 @@ impl Preview {
         let stop = Arc::new(AtomicBool::new(false));
         let mut running = Running {
             compositor,
+            backdrop: None,
             signature,
             socket,
             shader,
@@ -201,6 +223,14 @@ impl Preview {
             running.shut_down();
             return Err(e);
         }
+
+        // Only now: a layer surface needs an output to bind to, and until this
+        // point the only one was about to be taken away.
+        running.backdrop = request
+            .desktop_backdrop
+            .then(|| wallpaper::prepare(&dir))
+            .flatten()
+            .and_then(|(program, args)| spawn_on_socket(&running.socket, program, args));
 
         running.demo = Some(spawn_demo_loop(running.socket.clone(), request.hold_secs, stop));
         self.running = Some(running);
@@ -271,6 +301,10 @@ impl Running {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.demo.take() {
             let _ = handle.join();
+        }
+        if let Some(mut backdrop) = self.backdrop.take() {
+            let _ = backdrop.kill();
+            let _ = backdrop.wait();
         }
         let _ = self.compositor.kill();
         let _ = self.compositor.wait();
@@ -470,6 +504,7 @@ mod tests {
             plugin_so: PathBuf::from("/nowhere/HyprWindowShade.so"),
             size: (640, 400),
             hold_secs: 10.0,
+            desktop_backdrop: false,
             background: 0x1e1e2e,
         }
     }

@@ -184,6 +184,41 @@ pub fn plugin_loaded() -> Result<bool> {
 }
 
 // ---------------------------------------------------------------------------
+// Monitors
+// ---------------------------------------------------------------------------
+
+/// One output, reduced to what the preview needs to photograph the right one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Monitor {
+    /// Connector name, e.g. `DP-1`.
+    pub name: String,
+    /// Whether this is the one the user is looking at.
+    #[serde(default)]
+    pub focused: bool,
+    /// Pixel width.
+    #[serde(default)]
+    pub width: u32,
+    /// Pixel height.
+    #[serde(default)]
+    pub height: u32,
+}
+
+/// Run a `hyprctl` command against the user's own session.
+///
+/// The preview reaches for this to borrow a scratch output for a moment; most
+/// things here have a typed wrapper instead.
+pub fn run_args(args: &[&str]) -> Result<String> {
+    run(args)
+}
+
+/// Every output the compositor is driving.
+pub fn monitors() -> Result<Vec<Monitor>> {
+    let out = run(&["monitors", "-j"])?;
+    serde_json::from_str(&out)
+        .map_err(|e| Error::Hyprctl(format!("could not read the monitor list: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Instances, for the preview
 // ---------------------------------------------------------------------------
 

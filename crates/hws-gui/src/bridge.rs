@@ -150,6 +150,7 @@ pub mod qobject {
             width: i32,
             height: i32,
             background: &QString,
+            desktop_backdrop: bool,
         );
 
         /// Tear the preview down.
@@ -370,6 +371,7 @@ impl qobject::Backend {
         width: i32,
         height: i32,
         background: &QString,
+        desktop_backdrop: bool,
     ) {
         if self.as_ref().rust().preview_busy {
             return;
@@ -382,7 +384,9 @@ impl qobject::Backend {
         // Built here, on the Qt thread, because only the session knows what is
         // staged — and the session must not be touched from the worker.
         let request = match self.as_mut().rust_mut().session.as_ref() {
-            Some(session) => session.preview_request(&path, size, HOLD_SECS, background),
+            Some(session) => {
+                session.preview_request(&path, size, HOLD_SECS, background, desktop_backdrop)
+            }
             None => Err(hws_core::Error::other("the backend is still starting up")),
         };
         let request = match request {
