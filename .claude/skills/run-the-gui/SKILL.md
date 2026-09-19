@@ -55,6 +55,11 @@ Two traps, both of which look exactly like "the warning is fixed":
 `qt.qml.*=true` is verbose (~5k lines, mostly `qt.qml.import`). Grep it; do not
 read it.
 
+This is the runtime half. The static half is `make check`, which runs `qmllint`
+over every QML file — reach for that first, since it needs no run and catches
+what a render cannot show. The two do not overlap: `qmllint` never instantiates
+anything, so shadowed properties still only show up in the log above.
+
 ## Proving a warning is gone
 
 An absent warning is only evidence if the check can still produce one. Put the
