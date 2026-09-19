@@ -5,6 +5,7 @@
 //! narrow means the Qt layer holds no logic of its own and the whole app is
 //! testable without a compositor or a display.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -15,7 +16,8 @@ use crate::model::{
     TagKind, TagSlot, TagValue, WindowRule, TAGS,
 };
 use crate::settings::Settings;
-use crate::shader::meta::{ParamValue, ShaderInfo, KNOWN_UNIFORMS, MOTION_UNIFORMS};
+use crate::shader::meta::{Param, ParamValue, ShaderInfo, KNOWN_UNIFORMS, MOTION_UNIFORMS};
+use crate::shader::{DraftItem, ShaderDraft};
 use crate::theme::Theme;
 use crate::{block, emit, hyprctl, import, paths, shader, theme};
 
@@ -68,6 +70,12 @@ pub struct Session {
     saved: Config,
     /// Shaders found in the shader directory.
     pub shaders: Vec<ShaderInfo>,
+    /// Shader edits staged but not yet written, by shader path.
+    ///
+    /// Unlike the config, which is one document saved as a whole, a shader
+    /// belongs to its own file and is saved on its own — so these are keyed
+    /// per shader rather than held as one "last saved" copy.
+    drafts: BTreeMap<String, ShaderDraft>,
     /// The resolved colour theme.
     pub theme: Theme,
     /// Every theme available to choose from.
@@ -107,6 +115,7 @@ impl Session {
             saved: config.clone(),
             config,
             shaders: Vec::new(),
+            drafts: BTreeMap::new(),
             theme,
             themes,
             live: Live::default(),
@@ -117,9 +126,31 @@ impl Session {
         session
     }
 
-    /// True when there are unsaved changes.
+    /// True when the config has unsaved changes.
+    ///
+    /// Shader edits are not part of this: they are staged per file and written
+    /// by the Shaders page's own save, so a dirty shader must not light up a
+    /// Save button that writes the Hyprland config. See [`Session::dirty_shaders`].
     pub fn dirty(&self) -> bool {
         self.config != self.saved
+    }
+
+    /// How many shaders have edits staged but not written.
+    pub fn dirty_shaders(&self) -> usize {
+        self.drafts.values().filter(|d| !d.is_empty()).count()
+    }
+
+    /// The staged edits for one shader, if it has any.
+    fn draft(&self, path: &str) -> Option<&ShaderDraft> {
+        self.drafts.get(path).filter(|d| !d.is_empty())
+    }
+
+    /// The shader at `path`, or an error naming it.
+    fn shader_at(&self, path: &str) -> Result<&ShaderInfo> {
+        self.shaders
+            .iter()
+            .find(|s| s.path == path)
+            .ok_or_else(|| Error::other(format!("{} is not in the shader list", base_name(path))))
     }
 
     /// Drop every problem one source reported, before it reports again.
@@ -137,7 +168,10 @@ impl Session {
         let dir = paths::expand(&self.config.shader_dir);
         self.forget(Source::Shaders);
         match shader::scan_dir(&dir) {
-            Ok(list) => self.shaders = list,
+            Ok(list) => {
+                self.shaders = list;
+                self.prune_drafts();
+            }
             Err(e) => {
                 self.shaders.clear();
                 self.problems.push(Problem { source: Source::Shaders, text: e.to_string() });
@@ -294,22 +328,11 @@ impl Session {
                 "action": s.action,
                 "summary": s.action.summary(),
             })).collect::<Vec<_>>(),
-            "shaders": self.shaders.iter().map(|s| json!({
-                "path": s.path,
-                "name": s.name,
-                "stem": s.stem,
-                "display": paths::contract(std::path::Path::new(&s.path)),
-                "description": s.description,
-                "duration": s.duration,
-                "effectiveDuration": s.effective_duration(),
-                "overlay": s.overlay,
-                "uniforms": s.uniforms,
-                "params": s.params,
-                "notes": s.notes,
-                "isAnimation": s.is_animation(),
-                "isMotionDriven": s.is_motion_driven(),
-                "inUse": referenced.contains(&s.path),
-            })).collect::<Vec<_>>(),
+            "shaders": self.shaders
+                .iter()
+                .map(|s| self.shader_view(s, &referenced))
+                .collect::<Vec<_>>(),
+            "dirtyShaders": self.dirty_shaders(),
             "missingShaders": shader::missing(&referenced)
                 .iter()
                 .map(|p| json!({ "path": p, "name": base_name(p) }))
@@ -318,6 +341,43 @@ impl Session {
             "uniformCatalog": uniform_catalog(),
             "problems": self.messages(),
             "appVersion": env!("CARGO_PKG_VERSION"),
+        })
+    }
+
+    /// One shader as the UI sees it: what its file says, with any staged edits
+    /// laid over the top and marked as staged.
+    ///
+    /// `value`, `duration` and `overlay` are always what the user is looking at
+    /// and what the plugin will see once it is saved; the `saved*` fields are
+    /// what the file still says. A revert button needs both, and so does a
+    /// preview that wants to show the edit before it exists on disk.
+    fn shader_view(&self, s: &ShaderInfo, referenced: &[String]) -> Value {
+        let draft = self.draft(&s.path);
+        let duration = draft.map_or(s.duration, |d| d.duration_over(s.duration));
+        let overlay = draft.map_or(s.overlay, |d| d.overlay_over(s.overlay));
+
+        json!({
+            "path": s.path,
+            "name": s.name,
+            "stem": s.stem,
+            "display": paths::contract(std::path::Path::new(&s.path)),
+            "description": s.description,
+            "duration": duration,
+            "savedDuration": s.duration,
+            "durationStaged": draft.is_some_and(|d| d.duration_staged()),
+            // The plugin's own fallback when a shader declares no duration.
+            "effectiveDuration": duration.unwrap_or(0.3),
+            "overlay": overlay,
+            "savedOverlay": s.overlay,
+            "overlayStaged": draft.is_some_and(|d| d.overlay_staged()),
+            "uniforms": s.uniforms,
+            "params": s.params.iter().map(|p| param_view(p, draft)).collect::<Vec<_>>(),
+            "notes": s.notes,
+            "isAnimation": s.is_animation(),
+            "isMotionDriven": s.is_motion_driven(),
+            "inUse": referenced.contains(&s.path),
+            "staged": draft.map_or(0, ShaderDraft::len),
+            "dirty": draft.is_some(),
         })
     }
 
@@ -560,29 +620,19 @@ impl Session {
                 self.rescan_shaders();
                 Ok(Some(format!("Found {} shaders", self.shaders.len())))
             }
-            "shader.setParam" => self.set_shader_param(payload),
+            "shader.setParam" => self.stage_shader_param(payload),
             "shader.setDuration" => {
-                let path = path_of(payload)?;
                 let seconds = payload.get("seconds").and_then(Value::as_f64).map(|v| v as f32);
-                let info =
-                    shader::set_duration_on_disk(&path, seconds, self.settings.backups_to_keep)?;
-                self.replace_shader(info);
-                Ok(Some(match seconds {
-                    Some(s) => format!("Duration set to {}s", crate::model::trim_float(s)),
-                    None => "Duration removed; the plugin's 0.3s default applies".into(),
-                }))
+                self.stage(payload, |draft, info| draft.set_duration(info, seconds))?;
+                Ok(None)
             }
             "shader.setOverlay" => {
-                let path = path_of(payload)?;
                 let on = payload.get("overlay").and_then(Value::as_bool).unwrap_or(false);
-                let info = shader::set_overlay_on_disk(&path, on, self.settings.backups_to_keep)?;
-                self.replace_shader(info);
-                Ok(Some(if on {
-                    "Compositing with Hyprland's own close animation".into()
-                } else {
-                    "Replacing Hyprland's close animation".into()
-                }))
+                self.stage(payload, |draft, info| draft.set_overlay(info, on))?;
+                Ok(None)
             }
+            "shader.revert" => self.revert_shader(payload),
+            "shader.save" => self.save_shader(payload),
             "shader.reload" => {
                 hyprctl::reload_shaders()?;
                 Ok(Some("Asked the plugin to reload its shaders".into()))
@@ -786,12 +836,13 @@ impl Session {
         Ok(None)
     }
 
-    fn set_shader_param(&mut self, payload: &Value) -> Result<Option<String>> {
-        let path = path_of(payload)?;
+    /// Stage one parameter value against the shader's file.
+    fn stage_shader_param(&mut self, payload: &Value) -> Result<Option<String>> {
         let name = payload
             .get("name")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::other("no parameter name given"))?;
+            .ok_or_else(|| Error::other("no parameter name given"))?
+            .to_string();
 
         let value = match payload.get("value") {
             Some(Value::Number(n)) => ParamValue::Scalar(n.as_f64().unwrap_or(0.0) as f32),
@@ -802,20 +853,127 @@ impl Session {
             _ => return Err(Error::other("no value given")),
         };
 
-        let info = shader::set_param_on_disk(&path, name, &value, self.settings.backups_to_keep)?;
-        self.replace_shader(info);
-
-        if self.settings.reload_shaders_after_edit && self.live.running {
-            let _ = hyprctl::reload_shaders();
-        }
+        self.stage(payload, |draft, info| draft.set_param(info, &name, value))?;
         Ok(None)
     }
 
+    /// Apply an edit to a shader's draft, and prove the whole draft still fits
+    /// the file before keeping it.
+    ///
+    /// The dry run is what keeps a mistake — a `const` that is not there, or is
+    /// declared twice — an error at the moment the slider moves rather than a
+    /// surprise at save time, which is where it landed when every edit went
+    /// straight to disk. It reads the file and throws the result away; a shader
+    /// is a few kilobytes, and being told immediately is worth it.
+    fn stage<F>(&mut self, payload: &Value, edit: F) -> Result<()>
+    where
+        F: FnOnce(&mut ShaderDraft, &ShaderInfo),
+    {
+        let path = path_of(payload)?;
+        let key = path.to_string_lossy().into_owned();
+        let info = self.shader_at(&key)?.clone();
+
+        let mut draft = self.drafts.get(&key).cloned().unwrap_or_default();
+        edit(&mut draft, &info);
+
+        if !draft.is_empty() {
+            let src = paths::read_to_string(&path)?;
+            draft.apply(&src)?;
+        }
+
+        if draft.is_empty() {
+            self.drafts.remove(&key);
+        } else {
+            self.drafts.insert(key, draft);
+        }
+        Ok(())
+    }
+
+    /// Throw away one staged edit, or every edit staged for a shader.
+    fn revert_shader(&mut self, payload: &Value) -> Result<Option<String>> {
+        let path = path_of(payload)?;
+        let key = path.to_string_lossy().into_owned();
+
+        let item = match payload.get("item").and_then(Value::as_str) {
+            None | Some("all") => DraftItem::All,
+            Some("duration") => DraftItem::Duration,
+            Some("overlay") => DraftItem::Overlay,
+            Some(name) => DraftItem::Param(name.to_string()),
+        };
+
+        let Some(draft) = self.drafts.get_mut(&key) else {
+            return Ok(None);
+        };
+        draft.revert(&item);
+        let emptied = draft.is_empty();
+        if emptied {
+            self.drafts.remove(&key);
+        }
+
+        Ok(Some(match item {
+            DraftItem::All => {
+                format!("{} is back to what its file says", base_name(&key))
+            }
+            DraftItem::Duration => "Duration is back to what the file says".into(),
+            DraftItem::Overlay => "Overlay is back to what the file says".into(),
+            DraftItem::Param(name) => format!("{name} is back to what the file says"),
+        }))
+    }
+
+    /// Write one shader's staged edits to its file.
+    fn save_shader(&mut self, payload: &Value) -> Result<Option<String>> {
+        let path = path_of(payload)?;
+        let key = path.to_string_lossy().into_owned();
+
+        let Some(draft) = self.draft(&key).cloned() else {
+            return Ok(Some(format!("{} has no unsaved changes", base_name(&key))));
+        };
+        let staged = draft.len();
+
+        let (info, backup) = shader::save_draft(&path, &draft, self.settings.backups_to_keep)?;
+        self.drafts.remove(&key);
+        self.replace_shader(info);
+
+        let mut msg = format!(
+            "Wrote {staged} change{} to {}",
+            if staged == 1 { "" } else { "s" },
+            paths::contract(&path)
+        );
+        if let Some(b) = backup {
+            msg.push_str(&format!(" (backup: {})", paths::contract(&b)));
+        }
+
+        // The plugin reloads a shader when its mtime changes, so this is only
+        // for the case where that is not enough — and only now that something
+        // has actually been written.
+        if self.settings.reload_shaders_after_edit && self.live.running {
+            let _ = hyprctl::reload_shaders();
+        }
+        Ok(Some(msg))
+    }
+
     fn replace_shader(&mut self, info: ShaderInfo) {
+        if let Some(draft) = self.drafts.get_mut(&info.path) {
+            draft.prune(&info);
+        }
+        self.drafts.retain(|_, d| !d.is_empty());
         match self.shaders.iter_mut().find(|s| s.path == info.path) {
             Some(slot) => *slot = info,
             None => self.shaders.push(info),
         }
+    }
+
+    /// Drop staged edits the files have caught up with, and any for a shader
+    /// that is no longer there.
+    fn prune_drafts(&mut self) {
+        let shaders = &self.shaders;
+        self.drafts.retain(|path, draft| match shaders.iter().find(|s| s.path == *path) {
+            Some(info) => {
+                draft.prune(info);
+                !draft.is_empty()
+            }
+            None => false,
+        });
     }
 
     fn rule_index(&self, id: &str) -> Result<usize> {
@@ -879,6 +1037,24 @@ fn path_of(payload: &Value) -> Result<PathBuf> {
         .and_then(Value::as_str)
         .map(paths::expand)
         .ok_or_else(|| Error::other("no shader path given"))
+}
+
+/// One parameter as the UI sees it.
+///
+/// `value` is what the user is editing — the staged value when there is one —
+/// and `savedValue` is what the file still says, so a per-parameter revert can
+/// show what it would go back to.
+fn param_view(p: &Param, draft: Option<&ShaderDraft>) -> Value {
+    let staged = draft.and_then(|d| d.param(&p.name));
+    let mut view = serde_json::to_value(p).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert("savedValue".into(), json!(p.value));
+        obj.insert("staged".into(), json!(staged.is_some()));
+        if let Some(value) = staged {
+            obj.insert("value".into(), json!(value));
+        }
+    }
+    view
 }
 
 fn slot_of(payload: &Value) -> Result<TagSlot> {
@@ -973,6 +1149,7 @@ mod tests {
             settings: Settings::default(),
             config: Config::default(),
             saved: Config::default(),
+            drafts: BTreeMap::new(),
             shaders: Vec::new(),
             theme: theme::gruvbox_dark(),
             themes: theme::builtin(),
@@ -1207,45 +1384,147 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&cfg_path).unwrap(), original);
     }
 
-    #[test]
-    fn editing_a_shader_param_writes_the_file() {
+    /// A session with one shader in a directory of its own.
+    fn session_with_shader(src: &str) -> (tempfile::TempDir, PathBuf, Session) {
         let dir = tempfile::tempdir().unwrap();
         let shader_path = dir.path().join("dim.glsl");
-        std::fs::write(&shader_path, "const float DIM = 0.6;\n").unwrap();
+        std::fs::write(&shader_path, src).unwrap();
 
         let mut s = session();
         s.settings.backups_to_keep = 0;
         s.config.shader_dir = dir.path().to_string_lossy().into_owned();
         s.rescan_shaders();
         assert_eq!(s.shaders.len(), 1);
+        // Pointing the session at the temp directory is a config change; take
+        // it as the baseline so `dirty()` still means what the test means.
+        s.saved = s.config.clone();
+        (dir, shader_path, s)
+    }
 
+    fn set_param(s: &mut Session, path: &Path, name: &str, value: f64) -> Result<Option<String>> {
         s.command(
             "shader.setParam",
-            &json!({ "path": shader_path.to_string_lossy(), "name": "DIM", "value": 0.2 }),
+            &json!({ "path": path.to_string_lossy(), "name": name, "value": value }),
         )
-        .unwrap();
-
-        assert_eq!(std::fs::read_to_string(&shader_path).unwrap(), "const float DIM = 0.2;\n");
-        // The in-memory view is refreshed too.
-        let p = &s.shaders[0].params[0];
-        assert_eq!(p.value, ParamValue::Scalar(0.2));
     }
 
     #[test]
-    fn editing_a_missing_param_reports_instead_of_corrupting() {
-        let dir = tempfile::tempdir().unwrap();
-        let shader_path = dir.path().join("dim.glsl");
-        std::fs::write(&shader_path, "const float DIM = 0.6;\n").unwrap();
+    fn editing_a_shader_param_stages_it_without_touching_the_file() {
+        let (_d, path, mut s) = session_with_shader("const float DIM = 0.6;\n");
 
-        let mut s = session();
-        let err = s
-            .command(
-                "shader.setParam",
-                &json!({ "path": shader_path.to_string_lossy(), "name": "GONE", "value": 1 }),
-            )
-            .unwrap_err();
-        assert!(err.to_string().contains("GONE"));
-        assert_eq!(std::fs::read_to_string(&shader_path).unwrap(), "const float DIM = 0.6;\n");
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "const float DIM = 0.6;\n");
+        assert_eq!(s.dirty_shaders(), 1);
+        // The config's own dirty flag is a separate thing and must not move.
+        assert!(!s.dirty());
+
+        // The view shows the staged value, and what the file still says.
+        let view = s.state();
+        let param = &view["shaders"][0]["params"][0];
+        assert_eq!(param["value"], json!(0.2_f32));
+        assert_eq!(param["savedValue"], json!(0.6_f32));
+        assert_eq!(param["staged"], json!(true));
+        assert_eq!(view["shaders"][0]["dirty"], json!(true));
+    }
+
+    #[test]
+    fn saving_a_shader_writes_every_staged_edit_at_once() {
+        let (_d, path, mut s) = session_with_shader(
+            "const float DIM = 0.6;\nconst float GAIN = 1.0;\nvoid main() {}\n",
+        );
+
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+        set_param(&mut s, &path, "GAIN", 2.0).unwrap();
+        s.command("shader.setOverlay", &json!({ "path": path.to_string_lossy(), "overlay": true }))
+            .unwrap();
+
+        let msg =
+            s.command("shader.save", &json!({ "path": path.to_string_lossy() })).unwrap().unwrap();
+        assert!(msg.contains("3 changes"), "{msg}");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("const float DIM = 0.2;"));
+        assert!(written.contains("const float GAIN = 2.0;"));
+        assert!(written.contains("// @overlay"));
+
+        assert_eq!(s.dirty_shaders(), 0);
+        assert_eq!(s.shaders[0].params[0].value, ParamValue::Scalar(0.2));
+    }
+
+    #[test]
+    fn reverting_one_parameter_leaves_the_others_staged() {
+        let (_d, path, mut s) = session_with_shader(
+            "const float DIM = 0.6;\nconst float GAIN = 1.0;\nvoid main() {}\n",
+        );
+
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+        set_param(&mut s, &path, "GAIN", 2.0).unwrap();
+        s.command("shader.revert", &json!({ "path": path.to_string_lossy(), "item": "DIM" }))
+            .unwrap();
+
+        assert_eq!(s.state()["shaders"][0]["staged"], json!(1));
+        s.command("shader.save", &json!({ "path": path.to_string_lossy() })).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("const float DIM = 0.6;"), "the reverted edit should be gone");
+        assert!(written.contains("const float GAIN = 2.0;"));
+    }
+
+    #[test]
+    fn reverting_a_whole_shader_stages_nothing() {
+        let (_d, path, mut s) = session_with_shader("const float DIM = 0.6;\n");
+
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+        s.command("shader.revert", &json!({ "path": path.to_string_lossy() })).unwrap();
+
+        assert_eq!(s.dirty_shaders(), 0);
+        assert_eq!(s.state()["shaders"][0]["params"][0]["value"], json!(0.6_f32));
+    }
+
+    #[test]
+    fn dragging_back_to_the_saved_value_is_not_an_unsaved_change() {
+        let (_d, path, mut s) = session_with_shader("const float DIM = 0.6;\n");
+
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+        set_param(&mut s, &path, "DIM", 0.6).unwrap();
+
+        assert_eq!(s.dirty_shaders(), 0);
+    }
+
+    #[test]
+    fn saving_a_shader_with_nothing_staged_writes_nothing() {
+        let (_d, path, mut s) = session_with_shader("const float DIM = 0.6;\n");
+
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        s.command("shader.save", &json!({ "path": path.to_string_lossy() })).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn a_shader_edited_underneath_us_drops_the_staged_edit_it_matches() {
+        let (_d, path, mut s) = session_with_shader(
+            "const float DIM = 0.6;\nconst float GAIN = 1.0;\nvoid main() {}\n",
+        );
+
+        set_param(&mut s, &path, "DIM", 0.2).unwrap();
+        set_param(&mut s, &path, "GAIN", 2.0).unwrap();
+
+        // Someone saves the same DIM from an editor, and deletes GAIN entirely.
+        std::fs::write(&path, "const float DIM = 0.2;\nvoid main() {}\n").unwrap();
+        s.command("shader.rescan", &json!({})).unwrap();
+
+        assert_eq!(s.dirty_shaders(), 0, "neither edit is an edit any more");
+    }
+
+    #[test]
+    fn editing_a_missing_param_reports_instead_of_staging_it() {
+        let (_d, path, mut s) = session_with_shader("const float DIM = 0.6;\n");
+
+        let err = set_param(&mut s, &path, "GONE", 1.0).unwrap_err();
+        assert!(err.to_string().contains("GONE"), "{err}");
+        assert_eq!(s.dirty_shaders(), 0, "a refused edit must not stay staged");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "const float DIM = 0.6;\n");
     }
 
     #[test]

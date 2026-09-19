@@ -13,7 +13,8 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 400
     visible: true
-    title: "HyprWindowShade" + (App.dirty ? " — unsaved changes" : "")
+    title: "HyprWindowShade"
+           + (App.dirty || App.dirtyShaders > 0 ? " — unsaved changes" : "")
     color: Theme.bg
     opacity: Theme.windowOpacity
 
@@ -117,11 +118,10 @@ ApplicationWindow {
                         })
             return
         }
-        if (App.dirty && !window.quitConfirmed) {
+        if ((App.dirty || App.dirtyShaders > 0) && !window.quitConfirmed) {
             close.accepted = false
             confirm.ask("Close without saving?",
-                        "Your rules, layers and keybinds have not been written to "
-                        + App.configPathDisplay + ". Shader edits were saved as you made them.",
+                        window.unsavedSummary(),
                         "Discard and close", true,
                         function () {
                             window.quitConfirmed = true
@@ -132,6 +132,20 @@ ApplicationWindow {
 
     property bool quitConfirmed: false
     property bool hyprpmCloseConfirmed: false
+
+    // Two kinds of unsaved work, written by two different buttons to two
+    // different places, so the warning has to name whichever ones apply.
+    function unsavedSummary() {
+        var parts = []
+        if (App.dirty)
+            parts.push("Your rules, layers and keybinds have not been written to "
+                       + App.configPathDisplay + ".")
+        if (App.dirtyShaders > 0)
+            parts.push(App.plural(App.dirtyShaders, "shader")
+                       + (App.dirtyShaders === 1 ? " has" : " have")
+                       + " changes that were never written to the file.")
+        return parts.join(" ")
+    }
 
     Shortcut {
         sequences: [StandardKey.Save]
@@ -208,6 +222,11 @@ ApplicationWindow {
                 Badge {
                     visible: App.dirty
                     text: "unsaved"
+                    tint: Theme.warn
+                }
+                Badge {
+                    visible: App.dirtyShaders > 0
+                    text: App.plural(App.dirtyShaders, "shader") + " edited"
                     tint: Theme.warn
                 }
             }

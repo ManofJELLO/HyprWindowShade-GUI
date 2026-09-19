@@ -8,18 +8,21 @@ Button {
     property bool primary: false
     property bool danger: false
     property string tooltip: ""
+    // Badge-sized, for a button that sits inside a row of labels rather than
+    // in a row of its own.
+    property bool compact: false
 
-    implicitHeight: Theme.rowHeight
-    padding: Theme.gap
-    leftPadding: Theme.pad
-    rightPadding: Theme.pad
+    implicitHeight: control.compact ? 22 : Theme.rowHeight
+    padding: control.compact ? 2 : Theme.gap
+    leftPadding: control.compact ? Theme.gap : Theme.pad
+    rightPadding: control.compact ? Theme.gap : Theme.pad
     hoverEnabled: true
 
     readonly property color _tint: danger ? Theme.error
                                           : (primary ? Theme.accent : Theme.border)
 
     background: Rectangle {
-        radius: Theme.radiusSmall
+        radius: control.compact ? height / 2 : Theme.radiusSmall
         color: {
             if (!control.enabled)
                 return "transparent"
@@ -49,8 +52,8 @@ Button {
                 return Theme.error
             return Theme.fg
         }
-        font.pixelSize: Theme.fontSize
-        font.weight: control.primary ? Font.DemiBold : Font.Normal
+        font.pixelSize: control.compact ? Theme.fontSizeSmall : Theme.fontSize
+        font.weight: control.primary || control.compact ? Font.DemiBold : Font.Normal
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight

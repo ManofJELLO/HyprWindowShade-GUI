@@ -5,8 +5,12 @@ import dev.hyprwindowshade.gui
 // A slider with a label and an editable number beside it.
 //
 // `moved` fires while dragging (for a live preview) and `settled` fires once the
-// drag ends or the number is typed — which is when the file gets written, so a
-// drag is one save rather than two hundred.
+// drag ends or the number is typed — which is when the value is staged, so a
+// drag stages once rather than two hundred times.
+//
+// `markValue` puts a tick on the track: where the value was before you started
+// moving it. Set it only while that differs from the value, or it sits under
+// the handle as noise.
 Item {
     id: root
 
@@ -16,6 +20,11 @@ Item {
     property real stepSize: 0.01
     property real value: 0
     property bool integer: false
+    // A reference point on the track, or null for none.
+    property var markValue: null
+
+    readonly property bool hasMark: root.markValue !== null && root.markValue !== undefined
+                                    && root.markValue >= root.from && root.markValue <= root.to
 
     signal moved(real value)
     signal settled(real value)
@@ -88,6 +97,7 @@ Item {
             }
 
             background: Rectangle {
+                id: track
                 x: slider.leftPadding
                 y: slider.topPadding + slider.availableHeight / 2 - height / 2
                 width: slider.availableWidth
@@ -102,6 +112,23 @@ Item {
                     height: parent.height
                     radius: 2
                     color: root.enabled ? Theme.accent : Theme.muted
+                }
+
+                // Where the value sits in the file. Positioned on the handle's
+                // own travel, not the track's full width, so the mark and the
+                // handle line up at every value rather than only in the middle.
+                Rectangle {
+                    visible: root.hasMark
+                    width: 2
+                    height: 12
+                    radius: 1
+                    color: Theme.muted
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: {
+                        var span = root.to - root.from
+                        var at = span === 0 ? 0 : (root.markValue - root.from) / span
+                        return at * (track.width - 14) + 7 - width / 2
+                    }
                 }
             }
 

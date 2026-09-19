@@ -9,8 +9,9 @@ It does two things:
   tags, layer shaders, open and close animations, keybinds and startup calls — into a block
   between two marker comments. The rest of your config is never touched.
 * **Edits the shaders themselves** — the `const` values inside a `.glsl`, its `// @duration`
-  and its `// @overlay`. The plugin reloads a shader when its mtime changes, so a slider here
-  is a live change on screen.
+  and its `// @overlay`. Edits are staged, not written: move what you like, put any single
+  value back, then save that shader when you mean it. The plugin reloads a shader when its
+  mtime changes, so saving is the moment it reaches the screen.
 
 It wears your Qt colours by default, so it looks like the rest of your desktop.
 Gruvbox dark and light are built in if you would rather it did not; any other
@@ -43,14 +44,16 @@ Seven pages down the left:
 | Page | What it does |
 |---|---|
 | **Rules** | Window rules. Match by class or title, then fill any of the plugin's twenty shader tags. |
-| **Shaders** | Everything in your shader folder: what each one declares, and sliders for its tunable constants. |
+| **Shaders** | Everything in your shader folder: what each one declares, and sliders for its tunable constants. Each shader is saved — or reverted, value by value — on its own. |
 | **Layers** | `layershader`, `layeropenanim`, `layercloseanim` by namespace, with live namespaces offered. |
 | **Keybinds** | Toggle binds and session-start calls. |
 | **Preview** | Exactly the Lua that will be written, and the importer. |
 | **Plugin** | Installs, updates and reloads the plugin itself through `hyprpm`, and shows what it prints. |
 | **Settings** | Paths, how the block is written, theme, backups. |
 
-Nothing is written until you press **Save**.
+Nothing is written until you press **Save**. Shaders are their own files, so they have their
+own save: the header **Save** writes your Hyprland config, and **Save shader** writes the
+`.glsl` you are looking at.
 
 ![Shaders](docs/shaders.png)
 
@@ -179,9 +182,20 @@ certainly up. Leave it at zero unless you actually see the problem.
 ## Shader parameters
 
 The plugin populates a fixed set of uniforms and offers no channel for custom ones, so a
-shader's tunable numbers are `const` declarations in its source. Editing one here rewrites
-that line in the file — indentation, trailing comments and line endings intact — and the
-plugin picks it up on the next frame.
+shader's tunable numbers are `const` declarations in its source. Editing one here stages a
+new value; **Save shader** rewrites that line in the file — indentation, trailing comments and
+line endings intact — and the plugin picks it up on the next frame.
+
+Staging rather than writing is what makes a shader safe to experiment with. Every value that
+has moved says **was 0.6** beside it — what the file still holds — and carries a tick on its
+slider at that position, so you can see how far you have wandered without reading a number.
+A **Revert** beside it puts that one value back. A colour shows the same thing as a colour:
+the swatch splits, the shade the file holds sitting underneath the one you are trying. **Revert all** drops everything staged for that
+shader; nothing on disk has changed, so there is nothing to undo. Dragging a slider back to
+the value the file already has clears the mark by itself.
+
+One save is one write and one backup, however many values it carries — which also means a
+long afternoon of tuning no longer pushes the copy you started from out of the backup folder.
 
 The app finds two kinds:
 
@@ -224,7 +238,7 @@ Two file-level directives are editable too:
 * **`// @overlay`** — composite with Hyprland's own close animation instead of replacing it.
   Right for a tint or a wipe, wrong for a dissolve that drives its own alpha.
 
-Shader files are backed up before every edit, same as the config.
+Shader files are backed up before every save, same as the config.
 
 ---
 
@@ -349,7 +363,7 @@ route does not apply, a `doas`-only machine for instance, since `doas` has no as
 | Load the plugin | Nothing, `hyprpm reload -n`, or `hyprctl plugin load <path>`. |
 | Startup delay | See above. Zero unless you need it. |
 | Reload Hyprland after saving | Runs `hyprctl reload` so new rules apply without logging out. |
-| Reload shaders after editing one | Off by default — the plugin already reloads on mtime change. |
+| Reload shaders after editing one | Runs after **Save shader**. Off by default — the plugin already reloads on mtime change. |
 | Repository | Where **Install** takes the plugin from. Default `https://github.com/ManofJELLO/HyprWindowShade`. |
 | Plugin name | What `hyprpm` calls it, which `enable`, `disable` and `remove` take. Default `HyprWindowShade`. |
 

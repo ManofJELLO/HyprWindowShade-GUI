@@ -27,7 +27,12 @@ QtObject {
     }
 
     readonly property bool ready: app.backend ? app.backend.ready : false
+
+    // Two separate kinds of unsaved work, because they are written to different
+    // files by different buttons: `dirty` is the managed block in your Hyprland
+    // config, `dirtyShaders` is how many .glsl files have staged edits.
     readonly property bool dirty: state.dirty === true
+    readonly property int dirtyShaders: state.dirtyShaders || 0
 
     readonly property var rules: state.rules || []
     readonly property var layers: state.layers || []
@@ -186,6 +191,11 @@ QtObject {
             return ""
         var parts = String(path).split("/")
         return parts[parts.length - 1]
+    }
+
+    // "3 shaders", "1 shader".
+    function plural(n, word) {
+        return n + " " + word + (n === 1 ? "" : "s")
     }
 
     function seconds(v) {
