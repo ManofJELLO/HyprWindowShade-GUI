@@ -13,7 +13,6 @@ fn main() {
         "qml/components/LineEdit.qml",
         "qml/components/PasswordDialog.qml",
         "qml/components/PillButton.qml",
-        "qml/components/SectionHeader.qml",
         "qml/components/ShaderPicker.qml",
         "qml/components/Tip.qml",
         "qml/components/Toast.qml",

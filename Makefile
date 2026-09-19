@@ -3,6 +3,8 @@ DESTDIR ?=
 CARGO ?= cargo
 
 BIN := hyprwindowshade-gui
+QMLLINT ?= qmllint
+QML_FILES := $(shell find crates/hws-gui/qml -name '*.qml')
 
 .PHONY: all build release test check install uninstall clean shots
 
@@ -18,9 +20,14 @@ release:
 test:
 	$(CARGO) test -p hws-core
 
+# clippy builds the crate, and that build is what writes the QML module the
+# linter needs to resolve `import dev.hyprwindowshade.gui` — so it has to come
+# first. qmllint reads what the running engine tolerates but no static tool
+# should have to: reserved words, shadowed properties, bindings to nothing.
 check:
 	$(CARGO) fmt --check
 	$(CARGO) clippy --all-targets -- -D warnings -A clippy::field_reassign_with_default
+	$(QMLLINT) -I target/cxxqt/qml_modules $(QML_FILES)
 
 install: release
 	install -Dm755 target/release/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
