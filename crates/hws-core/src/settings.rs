@@ -22,7 +22,20 @@ pub struct Settings {
     pub reload_shaders_after_edit: bool,
     /// Write a shader edit as soon as a slider settles, rather than on Apply.
     pub live_shader_edits: bool,
+    /// The repository the plugin page installs from with `hyprpm add`.
+    ///
+    /// Configurable because a fork, or a local clone, is a perfectly ordinary
+    /// thing to be running.
+    pub plugin_repo_url: String,
+    /// The plugin's name in hyprpm, which `enable` and `disable` take.
+    pub plugin_name: String,
 }
+
+/// Where the plugin is installed from unless someone says otherwise.
+pub const DEFAULT_PLUGIN_REPO: &str = "https://github.com/ManofJELLO/HyprWindowShade";
+
+/// The plugin's name as hyprpm lists it.
+pub const DEFAULT_PLUGIN_NAME: &str = "HyprWindowShade";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -32,6 +45,8 @@ impl Default for Settings {
             reload_after_save: false,
             reload_shaders_after_edit: false,
             live_shader_edits: true,
+            plugin_repo_url: DEFAULT_PLUGIN_REPO.to_string(),
+            plugin_name: DEFAULT_PLUGIN_NAME.to_string(),
         }
     }
 }
@@ -75,6 +90,12 @@ impl Settings {
         self.backups_to_keep = self.backups_to_keep.clamp(0, 200);
         if self.config_path.trim().is_empty() {
             self.config_path = Settings::default().config_path;
+        }
+        if self.plugin_repo_url.trim().is_empty() {
+            self.plugin_repo_url = DEFAULT_PLUGIN_REPO.to_string();
+        }
+        if self.plugin_name.trim().is_empty() {
+            self.plugin_name = DEFAULT_PLUGIN_NAME.to_string();
         }
         self
     }

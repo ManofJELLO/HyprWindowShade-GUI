@@ -25,6 +25,7 @@ pub mod block;
 pub mod emit;
 pub mod error;
 pub mod hyprctl;
+pub mod hyprpm;
 pub mod import;
 pub mod model;
 pub mod paths;
