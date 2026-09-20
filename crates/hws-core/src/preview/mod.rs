@@ -5,7 +5,8 @@
 //! uniforms the plugin fills in. That is an approximation, and an approximation
 //! that disagrees with the real thing is worse than no preview at all. So the
 //! preview *is* the real thing: a second Hyprland, the plugin loaded into it,
-//! and one window with the shader tagged onto it.
+//! and one window with the shader tagged onto it. What that window shows is a
+//! test card rather than a black terminal — see [`card`] for why.
 //!
 //! Three things make it unobtrusive:
 //!
@@ -32,6 +33,7 @@
 //!   and their own animation curves are read from the running compositor with
 //!   `hyprctl`, so the window in the pane is shaped like the windows around it.
 
+pub mod card;
 pub mod config;
 pub mod look;
 pub mod wallpaper;
@@ -181,6 +183,12 @@ impl Preview {
         let shader = config::shader_path(&request.original);
         paths::write_atomic(&shader, &request.source)?;
 
+        // What the demo window will have in it. Written before the compositor
+        // is up, so the first window already has something to show.
+        let card = card::path(&dir);
+        let (cols, rows) = card::geometry(request.size);
+        paths::write_atomic(&card, &card::render(cols, rows))?;
+
         // Before anything is started. The preview's own compositor never puts
         // a window on the screen any more, but the app's toast and its own
         // window are on it, and a photograph taken while a start is in flight
@@ -249,7 +257,7 @@ impl Preview {
             .flatten()
             .and_then(|(program, args)| spawn_on_socket(&running.socket, program, args));
 
-        running.demo = Some(spawn_demo_loop(running.socket.clone(), request.hold_secs, stop));
+        running.demo = Some(spawn_demo_loop(running.socket.clone(), card, request.hold_secs, stop));
         self.running = Some(running);
         Ok(())
     }
@@ -429,7 +437,14 @@ fn go_headless(signature: &str) -> Result<()> {
 /// The loop is the point, not decoration: an open or close shader exists only
 /// during the transition, so a preview that shows a window already open shows
 /// nothing at all of it. A steady shader is served just as well.
-fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+///
+/// Every window in the loop shows the same test card; see [`card`].
+fn spawn_demo_loop(
+    socket: String,
+    card: PathBuf,
+    hold_secs: f32,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     let hold = Duration::from_secs_f32(hold_secs.clamp(1.0, 60.0));
     // The still half of the cycle is split around the nudge, so the steady
     // state is seen before the window is disturbed and again after it settles.
@@ -446,7 +461,7 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
             // `Child::kill` can send, and a killed client is a surface that
             // vanishes rather than a window that closes.
             let lifetime = still + moving + still;
-            let Some(mut client) = spawn_demo_client(&socket, lifetime) else {
+            let Some(mut client) = spawn_demo_client(&socket, &card, lifetime) else {
                 // No terminal to demo with. Sleeping rather than spinning keeps
                 // this from becoming a fork bomb on a bare system.
                 sleep_unless_stopped(Duration::from_secs(5), &stop);
@@ -461,7 +476,7 @@ fn spawn_demo_loop(socket: String, hold_secs: f32, stop: Arc<AtomicBool>) -> Joi
             // resize with real velocity behind them — the only thing that makes
             // a wobble shader show anything at all.
             let mut neighbour = (!stop.load(Ordering::SeqCst))
-                .then(|| spawn_demo_client(&socket, moving))
+                .then(|| spawn_demo_client(&socket, &card, moving))
                 .flatten();
             sleep_unless_stopped(moving, &stop);
             reap(neighbour.take());
@@ -509,8 +524,8 @@ fn sleep_unless_stopped(total: Duration, stop: &AtomicBool) {
 /// The client is pointed straight at the nested socket rather than dispatched
 /// through `hyprctl`, which under a Lua config evaluates its argument as Lua
 /// and so cannot simply be handed a command line.
-fn spawn_demo_client(socket: &str, lifetime: Duration) -> Option<Child> {
-    let (program, args) = demo_terminal(lifetime)?;
+fn spawn_demo_client(socket: &str, card: &Path, lifetime: Duration) -> Option<Child> {
+    let (program, args) = demo_terminal(card, lifetime)?;
     spawn_on_socket(socket, program, args)
 }
 
@@ -532,7 +547,7 @@ fn spawn_on_socket(socket: &str, program: PathBuf, args: Vec<String>) -> Option<
 }
 
 /// A terminal to use as the demo window, with the arguments that fill it.
-fn demo_terminal(lifetime: Duration) -> Option<(PathBuf, Vec<String>)> {
+fn demo_terminal(card: &Path, lifetime: Duration) -> Option<(PathBuf, Vec<String>)> {
     const KNOWN: &[(&str, &[&str])] = &[
         ("kitty", &["-o", "font_size=12", "-o", "cursor_blink_interval=0", "-e"]),
         ("foot", &["-e"]),
@@ -542,29 +557,10 @@ fn demo_terminal(lifetime: Duration) -> Option<(PathBuf, Vec<String>)> {
         ("xterm", &["-e"]),
     ];
 
-    // Something with text and a little colour, so a shader that touches
-    // contrast or saturation has something to act on — and a `sleep` that runs
-    // out, which is how the window comes to close itself.
-    //
-    // A raw string, so the escapes below are the ones `printf` receives rather
-    // than ones Rust has already eaten.
-    let content = format!(
-        concat!(
-            r"printf '
-  HyprWindowShade
-  preview
-
-'; ",
-            r"printf '  [31m##[32m##[33m##[34m##[35m##[36m##[0m
-
-'; ",
-            r"printf '  the quick brown fox jumps
-  over the lazy dog
-'; ",
-            "exec sleep {:.2}",
-        ),
-        lifetime.as_secs_f32()
-    );
+    // The test card, and then a `sleep` that runs out — which is how the
+    // window comes to close itself. See [`card`] for what is in it and why a
+    // file is `cat`ed rather than the whole thing being spelled out here.
+    let content = format!("cat {}; exec sleep {:.2}", sh_quote(card), lifetime.as_secs_f32());
 
     KNOWN.iter().find_map(|(name, prefix)| {
         paths::which(name).map(|path| {
@@ -575,6 +571,11 @@ fn demo_terminal(lifetime: Duration) -> Option<(PathBuf, Vec<String>)> {
             (path, args)
         })
     })
+}
+
+/// Quote a path for `/bin/sh`.
+fn sh_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
 #[cfg(test)]
@@ -637,6 +638,26 @@ mod tests {
     fn capturing_without_a_preview_says_so() {
         let mut p = Preview::new();
         assert!(p.capture().is_err());
+    }
+
+    #[test]
+    fn the_demo_window_shows_the_card_and_then_runs_out() {
+        let Some((_, args)) =
+            demo_terminal(Path::new("/run/preview/testcard.ans"), Duration::from_secs(6))
+        else {
+            // No terminal installed, so there is nothing to assert about.
+            return;
+        };
+        let command = args.last().expect("a shell command");
+        assert!(command.contains("cat '/run/preview/testcard.ans'"), "{command}");
+        // `exec`, so the shell is replaced and the window closes when the
+        // sleep runs out rather than a moment after it.
+        assert!(command.ends_with("exec sleep 6.00"), "{command}");
+    }
+
+    #[test]
+    fn an_awkward_path_survives_the_shell() {
+        assert_eq!(sh_quote(Path::new("/tmp/it's here.ans")), r"'/tmp/it'\''s here.ans'");
     }
 
     #[test]

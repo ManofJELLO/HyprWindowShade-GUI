@@ -195,6 +195,12 @@ pub struct Monitor {
     /// Whether this is the one the user is looking at.
     #[serde(default)]
     pub focused: bool,
+    /// Where its top-left corner sits in the layout.
+    #[serde(default)]
+    pub x: i32,
+    /// Where its top-left corner sits in the layout.
+    #[serde(default)]
+    pub y: i32,
     /// Pixel width.
     #[serde(default)]
     pub width: u32,

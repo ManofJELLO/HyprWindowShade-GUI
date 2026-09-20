@@ -19,6 +19,9 @@
 //! Nothing appears on their screen and nothing of theirs moves — a new output
 //! has no windows to shuffle, and removing one that never had any leaves the
 //! rest alone.
+//!
+//! Except the mouse pointer, which Hyprland throws across the screen when any
+//! output goes away. That one is put back; see [`Borrowed`].
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,12 +65,81 @@ struct Borrowed {
     name: String,
     /// The mode it came up in, which is what was photographed.
     size: (u32, u32),
+    /// Where the pointer was before any of this, so it can be put back.
+    cursor: Option<(i32, i32)>,
 }
 
 impl Drop for Borrowed {
     fn drop(&mut self) {
         let _ = hyprctl::run_args(&["output", "remove", &self.name]);
+        if let Some(was) = self.cursor {
+            restore_cursor(was);
+        }
     }
+}
+
+/// Undo the jump the compositor makes when an output is taken away.
+///
+/// Removing a monitor warps the pointer to the middle of one of the others —
+/// `CMonitor::onDisconnect` does it with `force`, so `cursor:no_warps` does
+/// not stop it and there is nothing to configure around it. A preview is not
+/// allowed to move someone's mouse, so the position is noted before the
+/// output is borrowed and restored once it has been given back.
+///
+/// Only the compositor's own warp is undone. If the pointer is anywhere other
+/// than the exact middle of a monitor, the person moved it themselves during
+/// the second this took, and moving it back would be the same rudeness in the
+/// other direction.
+fn restore_cursor(was: (i32, i32)) {
+    // The warp lands as the output goes away, which is a moment after
+    // `output remove` has answered.
+    std::thread::sleep(Duration::from_millis(150));
+
+    let Some(now) = cursor_pos() else { return };
+    if now == was || !is_a_monitor_middle(now) {
+        return;
+    }
+    warp_to(was);
+}
+
+/// Where the pointer is.
+fn cursor_pos() -> Option<(i32, i32)> {
+    parse_pos(&hyprctl::run_args(&["cursorpos"]).ok()?)
+}
+
+/// Read what `hyprctl cursorpos` prints: `881, 973`.
+fn parse_pos(out: &str) -> Option<(i32, i32)> {
+    let (x, y) = out.trim().split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// Whether a position is exactly where a removal would have thrown the mouse.
+fn is_a_monitor_middle(pos: (i32, i32)) -> bool {
+    hyprctl::monitors().is_ok_and(|monitors| is_middle_of(&monitors, pos))
+}
+
+/// The same arithmetic Hyprland does — the monitor's origin plus half its
+/// size — rather than anything cleverer, so that a layout this does not
+/// predict correctly simply leaves the pointer alone.
+fn is_middle_of(monitors: &[hyprctl::Monitor], (x, y): (i32, i32)) -> bool {
+    monitors.iter().any(|m| {
+        let (mx, my) = (m.x + (m.width / 2) as i32, m.y + (m.height / 2) as i32);
+        (mx - x).abs() <= 1 && (my - y).abs() <= 1
+    })
+}
+
+/// Put the pointer at a position, whichever config the session is written in.
+///
+/// `hyprctl dispatch` is evaluated as Lua when the user's own config is Lua,
+/// and taken as a plain dispatcher line when it is not. Nothing from outside
+/// says which, and the wrong spelling fails without doing anything, so both
+/// are offered and the first one that is accepted wins.
+fn warp_to((x, y): (i32, i32)) {
+    if hyprctl::run_args(&["dispatch", &format!("movecursor {x} {y}")]).is_ok() {
+        return;
+    }
+    let lua = format!("hl.dsp.cursor.move({{x = {x}, y = {y}}})");
+    let _ = hyprctl::run_args(&["dispatch", &lua]);
 }
 
 /// Add a headless output and wait for it to arrive.
@@ -75,6 +147,9 @@ fn borrow_output() -> Result<Borrowed> {
     // Two captures overlapping would each see the other's output in the diff
     // below, so only one may be in flight; see `BORROW`.
     let before: Vec<String> = names()?;
+    // Before the output exists, because giving it back is what moves the
+    // pointer; see `Borrowed`.
+    let cursor = cursor_pos();
     hyprctl::run_args(&["output", "create", "headless"])?;
 
     // Give the output time to arrive and the wallpaper time to be drawn on it.
@@ -85,7 +160,7 @@ fn borrow_output() -> Result<Borrowed> {
 
     let found = hyprctl::monitors()?.into_iter().find(|m| !before.contains(&m.name));
     match found {
-        Some(m) => Ok(Borrowed { name: m.name, size: (m.width, m.height) }),
+        Some(m) => Ok(Borrowed { name: m.name, size: (m.width, m.height), cursor }),
         // Nothing to give back, so no guard is built — but something did
         // probably arrive late, and the next capture's diff would then adopt
         // it. Remove by the name it would have had.
@@ -230,6 +305,29 @@ mod tests {
     #[test]
     fn a_capture_that_never_happened_is_blank() {
         assert!(looks_blank(Path::new("/nonexistent/none.png"), 1_000_000));
+    }
+
+    fn monitor(name: &str, x: i32, y: i32, width: u32, height: u32) -> hyprctl::Monitor {
+        hyprctl::Monitor { name: name.into(), focused: false, x, y, width, height }
+    }
+
+    #[test]
+    fn the_pointer_is_read_back_the_way_hyprctl_prints_it() {
+        assert_eq!(parse_pos("881, 973\n"), Some((881, 973)));
+        assert_eq!(parse_pos("0, 0"), Some((0, 0)));
+        assert_eq!(parse_pos("no such thing"), None);
+    }
+
+    #[test]
+    fn only_the_compositors_own_warp_is_undone() {
+        // Where a removal throws the pointer on a two-monitor desktop.
+        let monitors =
+            [monitor("DP-3", 0, 0, 2560, 1080), monitor("HDMI-A-1", 2560, 0, 1920, 1080)];
+        assert!(is_middle_of(&monitors, (1280, 540)));
+        assert!(is_middle_of(&monitors, (3520, 540)));
+        // Anywhere else is someone using their mouse, and is left alone.
+        assert!(!is_middle_of(&monitors, (1280, 600)));
+        assert!(!is_middle_of(&monitors, (337, 911)));
     }
 
     #[test]
