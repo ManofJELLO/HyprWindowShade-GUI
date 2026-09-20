@@ -25,14 +25,20 @@ Item {
         { id: "reload_shaders",       label: "Reload all shaders", wants: "" }
     ]
 
-    readonly property string kindId: editor.action && editor.action.action
-                                     ? editor.action.action : "reload_shaders"
-    readonly property var kind: {
-        for (var i = 0; i < editor.kinds.length; ++i)
-            if (editor.kinds[i].id === editor.kindId)
-                return editor.kinds[i]
-        return editor.kinds[editor.kinds.length - 1]
-    }
+    // A call picked but not yet complete. A toggle has nothing to toggle
+    // without a shader, so the config cannot hold one — and picking the kind
+    // before the shader is the obvious order to work in. The half-built call
+    // is therefore kept here, on screen and editable, rather than sent to the
+    // engine to be refused.
+    property var draft: null
+
+    readonly property var shown: editor.draft ? editor.draft
+                                 : (editor.action ? editor.action
+                                                  : ({ action: "reload_shaders" }))
+
+    readonly property string kindId: editor.shown.action ? editor.shown.action
+                                                         : "reload_shaders"
+    readonly property var kind: editor.kindOf(editor.kindId)
 
     readonly property bool wantsClass: editor.kind.wants.indexOf("class") >= 0
     readonly property bool wantsNamespace: editor.kind.wants.indexOf("namespace") >= 0
@@ -41,29 +47,52 @@ Item {
 
     implicitHeight: column.implicitHeight
 
+    function kindOf(id) {
+        for (var i = 0; i < editor.kinds.length; ++i)
+            if (editor.kinds[i].id === id)
+                return editor.kinds[i]
+        return editor.kinds[editor.kinds.length - 1]
+    }
+
+    function currentClass() {
+        return editor.shown["class"] ? editor.shown["class"] : ""
+    }
+
+    function currentNamespace() {
+        return editor.shown.namespace ? editor.shown.namespace : ""
+    }
+
     function currentShaderPath() {
-        if (editor.action && editor.action.shader && editor.action.shader.path)
-            return editor.action.shader.path
+        if (editor.shown.shader && editor.shown.shader.path)
+            return editor.shown.shader.path
         return ""
     }
 
-    function emitWith(overrides) {
-        var next = { action: editor.kindId }
-        if (editor.wantsClass)
-            next["class"] = editor.action && editor.action["class"] ? editor.action["class"] : ""
-        if (editor.wantsNamespace)
-            next.namespace = editor.action && editor.action.namespace
-                             ? editor.action.namespace : ""
-        if (editor.wantsShader) {
+    // Build the call for `kindId` out of what is on screen, plus `overrides`,
+    // and either send it or hold it until it is whole.
+    function apply(kindId, overrides) {
+        var wants = editor.kindOf(kindId).wants
+        var next = { action: kindId }
+        if (wants.indexOf("class") >= 0)
+            next["class"] = editor.currentClass()
+        if (wants.indexOf("namespace") >= 0)
+            next.namespace = editor.currentNamespace()
+        if (wants.indexOf("shader") >= 0) {
             var p = editor.currentShaderPath()
             next.shader = p === "" ? null : { path: p }
         }
         for (var key in overrides)
             next[key] = overrides[key]
-        // A "toggle" with no shader is meaningless, so it is never emitted.
-        if (editor.wantsShader && !editor.shaderOptional && !next.shader)
+        if (wants.indexOf("shader") >= 0 && wants.indexOf("shader?") < 0 && !next.shader) {
+            editor.draft = next
             return
+        }
+        editor.draft = null
         editor.edited(next)
+    }
+
+    function emitWith(overrides) {
+        editor.apply(editor.kindId, overrides)
     }
 
     Column {
@@ -82,19 +111,7 @@ Item {
                 return 0
             }
             onActivated: function (index) {
-                var next = { action: editor.kinds[index].id }
-                var wants = editor.kinds[index].wants
-                if (wants.indexOf("class") >= 0)
-                    next["class"] = editor.action && editor.action["class"]
-                                    ? editor.action["class"] : ""
-                if (wants.indexOf("namespace") >= 0)
-                    next.namespace = editor.action && editor.action.namespace
-                                     ? editor.action.namespace : ""
-                if (wants.indexOf("shader") >= 0) {
-                    var p = editor.currentShaderPath()
-                    next.shader = p === "" ? null : { path: p }
-                }
-                editor.edited(next)
+                editor.apply(editor.kinds[index].id, ({}))
             }
         }
 
@@ -107,7 +124,7 @@ Item {
                 Layout.fillWidth: true
                 mono: true
                 placeholderText: "window class"
-                text: editor.action && editor.action["class"] ? editor.action["class"] : ""
+                text: editor.currentClass()
                 onCommit: function (v) {
                     editor.emitWith({ "class": v.trim() })
                 }
@@ -136,7 +153,7 @@ Item {
                 Layout.fillWidth: true
                 mono: true
                 placeholderText: "layer namespace"
-                text: editor.action && editor.action.namespace ? editor.action.namespace : ""
+                text: editor.currentNamespace()
                 onCommit: function (v) {
                     editor.emitWith({ namespace: v.trim() })
                 }
@@ -164,6 +181,15 @@ Item {
             onPicked: function (path, duration, isDefault) {
                 editor.emitWith({ shader: path === "" ? null : { path: path } })
             }
+        }
+
+        Text {
+            width: parent.width
+            visible: editor.draft !== null
+            text: "Pick a shader to finish this action — until then it is not saved."
+            color: Theme.warn
+            font.pixelSize: Theme.fontSizeSmall
+            wrapMode: Text.WordWrap
         }
     }
 }
