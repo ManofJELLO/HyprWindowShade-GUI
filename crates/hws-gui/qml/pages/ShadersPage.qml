@@ -263,7 +263,8 @@ Item {
                         contentWidth: availableWidth
 
                         ColumnLayout {
-                            width: detailScroll.availableWidth
+                            width: Math.min(detailScroll.availableWidth, Theme.contentMax)
+                            x: Math.round((detailScroll.availableWidth - width) / 2)
                             spacing: Theme.pad
 
                             // --- header ---

@@ -132,6 +132,12 @@ QtObject {
     readonly property int sidebarWidth: 188
     readonly property int listWidth: 300
 
+    // The widest a page's column of cards is allowed to get, centred in
+    // whatever is left over. Past this a wider window only stretches the
+    // fields inside it, and a dropdown reading "Toggle on the focused window"
+    // two thousand pixels wide is not easier to use, only stranger.
+    readonly property int contentMax: 1100
+
     readonly property int fontSize: 13
     readonly property int fontSizeSmall: 11
     readonly property int fontSizeLarge: 16

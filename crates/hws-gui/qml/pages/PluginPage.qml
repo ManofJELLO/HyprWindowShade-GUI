@@ -116,7 +116,8 @@ Item {
         contentWidth: availableWidth
 
         ColumnLayout {
-            width: scroll.availableWidth
+            width: Math.min(scroll.availableWidth, Theme.contentMax)
+            x: Math.round((scroll.availableWidth - width) / 2)
             spacing: Theme.pad
 
         // -------------------------------------------------------------------

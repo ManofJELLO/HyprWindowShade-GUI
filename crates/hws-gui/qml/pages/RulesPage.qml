@@ -243,7 +243,8 @@ Item {
                 contentWidth: availableWidth
 
                 ColumnLayout {
-                    width: editorScroll.availableWidth
+                    width: Math.min(editorScroll.availableWidth, Theme.contentMax)
+                    x: Math.round((editorScroll.availableWidth - width) / 2)
                     spacing: Theme.pad
 
                     // --- identity and match ---
