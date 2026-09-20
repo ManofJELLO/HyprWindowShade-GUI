@@ -189,13 +189,12 @@ impl Preview {
         let (cols, rows) = card::geometry(request.size);
         paths::write_atomic(&card, &card::render(cols, rows))?;
 
-        // Before anything is started. The preview's own compositor never puts
+        // Before anything is started. If this has to fall back to
+        // photographing the desktop, the preview's own compositor never puts
         // a window on the screen any more, but the app's toast and its own
         // window are on it, and a photograph taken while a start is in flight
         // catches whatever the click brought up.
-        if request.desktop_backdrop {
-            wallpaper::capture_if_showable(&dir);
-        }
+        let backdrop = request.desktop_backdrop.then(|| wallpaper::find_image(&dir)).flatten();
 
         let mut look = Look::from_host();
         look.prune_curves();
@@ -251,10 +250,8 @@ impl Preview {
 
         // Only now: a layer surface needs an output to bind to, and until this
         // point the only one was about to be taken away.
-        running.backdrop = request
-            .desktop_backdrop
-            .then(|| wallpaper::prepare(&dir))
-            .flatten()
+        running.backdrop = backdrop
+            .and_then(|image| wallpaper::prepare(&image))
             .and_then(|(program, args)| spawn_on_socket(&running.socket, program, args));
 
         running.demo = Some(spawn_demo_loop(running.socket.clone(), card, request.hold_secs, stop));

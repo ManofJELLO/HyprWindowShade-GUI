@@ -75,8 +75,19 @@ Hyprland does not have to be running. Without it the app still edits your config
 shaders; it just cannot offer you the list of open window classes or live layer namespaces,
 and the "Try it" buttons and the shader preview are disabled.
 
-The preview additionally wants `grim`, to read frames out of the compositor it starts. It is
-not needed for anything else in the app.
+The preview additionally wants two small tools, neither of which is used anywhere else in
+the app, and both in the Arch repositories:
+
+* `grim`, to read frames out of the compositor it starts. Without it there is no preview.
+* `swaybg`, to draw your wallpaper behind the preview window. Without it the preview still
+  runs, on the flat colour of the pane. If swaybg is also what sets your own wallpaper, it
+  costs nothing at all — see [below](#where-the-wallpaper-behind-it-comes-from).
+
+It also opens a terminal as its demo window — kitty, foot, alacritty, ghostty, wezterm or
+xterm, whichever it finds.
+
+The **Plugin** page needs `hyprpm`, which on Arch is a package of its own rather than part
+of `hyprland`.
 
 ## Build and install
 
@@ -296,6 +307,28 @@ exits by itself a couple of seconds later.
 
 It needs Hyprland running to nest inside, the plugin installed, and `grim` to
 read frames out. The button says when one of those is missing.
+
+### Where the wallpaper behind it comes from
+
+**On your wallpaper** stands the preview on your desktop rather than on a flat colour,
+because whether a dissolve really reaches zero alpha only shows against something with
+light and dark in it.
+
+`swaybg` is what draws it, whichever way the image is found.
+
+If your own wallpaper is *also* set with `swaybg`, the image is simply read off the running
+swaybg's command line: nothing is added to your session, nothing is removed from it, and
+nothing moves.
+
+Set any other way — a different daemon, a video, a shuffling directory, a shader — there is
+no file to read, so the preview photographs your desktop instead. It does that on a headless
+output borrowed from your session for a second, which comes up with an empty workspace and
+your wallpaper already on it, so no window of yours is in the picture. The one visible cost
+is the mouse: Hyprland throws the pointer into the middle of the screen whenever an output
+is removed, and although the preview puts it straight back, you see the round trip. So the
+photograph is taken **once** and kept for as long as the app is open. Change your wallpaper
+while it is running and you will need to restart it — or turn the backdrop off, which the
+button under the pane does.
 
 ---
 

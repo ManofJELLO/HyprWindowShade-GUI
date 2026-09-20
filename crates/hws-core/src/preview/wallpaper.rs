@@ -5,46 +5,49 @@
 //! and dark in it. The most representative something is the desktop the shader
 //! is actually going to run on.
 //!
-//! So the preview photographs it. Not the wallpaper *file* — asking the
-//! wallpaper daemon which image it is showing works for some of them and not
-//! others, and falls apart entirely for the ones that do not show an image at
-//! all: a video wallpaper, a shuffling directory, a shader. A screenshot works
-//! whatever is behind it, because by then it is just pixels.
+//! There are two ways to get it, and the cheap one is tried first.
 //!
-//! Photographing the screen itself would catch every window on it, and there is
-//! no way to ask for the wallpaper layer alone. So the photograph is taken
+//! **Ask swaybg.** It is the tool this shows the backdrop with, so it is the
+//! one wallpaper daemon the preview can answer for, and a running swaybg was
+//! told on its command line which file it is showing. Reading that back costs
+//! nothing, touches nothing, and moves nothing — and the nested compositor is
+//! then pointed at the user's actual wallpaper file rather than at a
+//! photograph of it, which is a sharper picture into the bargain.
+//!
+//! **Photograph the desktop**, when the wallpaper was set some other way — a
+//! different daemon, a video, a shuffling directory, a shader. A screenshot
+//! works whatever is behind it, because by then it is just pixels. But
+//! photographing the screen itself would catch every window on it, and there
+//! is no way to ask for the wallpaper layer alone, so the photograph is taken
 //! somewhere nothing has ever been opened: a headless output added to the
 //! user's own session for a moment, which arrives with an empty workspace and
 //! the wallpaper already drawn on it, and is taken away again immediately.
-//! Nothing appears on their screen and nothing of theirs moves — a new output
-//! has no windows to shuffle, and removing one that never had any leaves the
-//! rest alone.
 //!
-//! Except the mouse pointer, which Hyprland throws across the screen when any
-//! output goes away. That one is put back; see [`Borrowed`].
+//! That second route is not free. Removing an output makes Hyprland throw the
+//! mouse pointer into the middle of the screen, and while the pointer is put
+//! back afterwards (see [`Borrowed`]) the round trip is still visible. So it
+//! is taken at most once for the life of the app and remembered; see
+//! [`photograph`].
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::hyprctl;
 use crate::paths;
 
-/// Tools that can show an image in the preview's compositor.
+/// The one tool the backdrop is shown with.
 ///
-/// `fill` crops to cover, which is the cropping-to-aspect the pane wants: the
-/// screenshot is a whole monitor and the pane is a small rectangle of a
-/// different shape.
-///
-/// hyprpaper is absent on purpose. Against a headless output it answers
+/// hyprpaper is not an alternative. Against a headless output it answers
 /// `Monitor HEADLESS-1 has no target: no wp will be created` and paints the
 /// output white — measured with the wildcard monitor, with the output named
 /// explicitly, with and without an instance signature in its environment, and
 /// with another encoder's PNG, while swaybg drew the same file on the same
-/// instance without complaint.
-const TOOLS: &[(&str, &[&str])] = &[("swaybg", &["-i", "{}", "-m", "fill"]), ("wbg", &["{}"])];
+/// instance without complaint. wbg works, but it is not in the Arch
+/// repositories, and one name that is beats two where one has to be built.
+const SHOW: &str = "swaybg";
 
 /// Held for the whole borrow of a scratch output.
 ///
@@ -204,14 +207,17 @@ fn names() -> Result<Vec<String>> {
     Ok(hyprctl::monitors()?.into_iter().map(|m| m.name).collect())
 }
 
-/// The program and arguments that show `image`, or `None` when no tool is
+/// The program and arguments that show `image`, or `None` when swaybg is not
 /// installed.
 pub fn show_command(image: &Path) -> Option<(PathBuf, Vec<String>)> {
-    let path = image.to_string_lossy().into_owned();
-    TOOLS.iter().find_map(|(name, args)| {
-        paths::which(name)
-            .map(|program| (program, args.iter().map(|a| a.replace("{}", &path)).collect()))
-    })
+    Some((paths::which(SHOW)?, show_args(image)))
+}
+
+/// `fill` crops to cover, which is the cropping-to-aspect the pane wants: a
+/// wallpaper is a whole monitor and the pane is a small rectangle of a
+/// different shape, so anything else would squash it.
+fn show_args(image: &Path) -> Vec<String> {
+    vec!["-i".into(), image.to_string_lossy().into_owned(), "-m".into(), "fill".into()]
 }
 
 /// Where the photograph of the desktop is kept.
@@ -232,19 +238,112 @@ fn looks_blank(image: &Path, pixels: u64) -> bool {
     bytes < pixels / 100
 }
 
-/// Take the photograph, if there is anything that could show it afterwards.
+/// The image to stand the preview on, or `None` for the flat colour.
 ///
 /// Called **before** the preview's compositor is started, and that ordering is
 /// not incidental: a nested compositor puts a window on the user's screen for
 /// the moment before it is made headless, and photographing the desktop after
 /// that catches the preview's own scaffolding in the picture.
 ///
-/// Best-effort: without it the preview still runs, on the flat colour of the
-/// pane, and only the backdrop is lost.
-pub fn capture_if_showable(dir: &Path) -> Option<()> {
+/// Best-effort throughout: without it the preview still runs, on the flat
+/// colour of the pane, and only the backdrop is lost.
+pub fn find_image(dir: &Path) -> Option<PathBuf> {
+    // Nothing to show it with is reason enough not to go looking.
+    paths::which(SHOW)?;
+    swaybg_image(dir).or_else(|| photograph(dir))
+}
+
+/// The wallpaper the user's own swaybg was told to show.
+///
+/// This is why the pointer usually stays where it is. swaybg is given the
+/// file on its command line and the kernel keeps that command line readable,
+/// so the whole question is answered by reading `/proc`: nothing is added to
+/// the session, nothing is removed from it, and nothing moves.
+///
+/// `ours` is the preview's own runtime directory. The preview runs a swaybg
+/// of its own, and on the fallback route that one is showing the photograph
+/// in there — which would make the next preview a photograph of a
+/// photograph. A swaybg showing a file from that directory is therefore not
+/// the user's.
+fn swaybg_image(ours: &Path) -> Option<PathBuf> {
+    swaybg_image_under(Path::new("/proc"), ours)
+}
+
+/// The same, told where the process table is, so it can be tested.
+fn swaybg_image_under(proc_root: &Path, ours: &Path) -> Option<PathBuf> {
+    let procs = std::fs::read_dir(proc_root).ok()?;
+    procs
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().chars().all(|c| c.is_ascii_digit()))
+        .find_map(|e| {
+            let argv = argv_of(&e.path())?;
+            (argv.first()?.rsplit('/').next()? == SHOW).then_some(())?;
+            let image = resolve(image_in(&argv)?, &e.path());
+            (image.is_file() && !image.starts_with(ours)).then_some(image)
+        })
+}
+
+/// One process's command line, as the arguments it was started with.
+fn argv_of(proc: &Path) -> Option<Vec<String>> {
+    let raw = std::fs::read(proc.join("cmdline")).ok()?;
+    let argv: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    (!argv.is_empty()).then_some(argv)
+}
+
+/// The image a swaybg command line was told to show.
+///
+/// swaybg takes one `-i` per output, so a desktop with a different wallpaper
+/// on each monitor has several. The first is as good a choice as any: the
+/// preview is one small pane and cannot show them all.
+fn image_in(argv: &[String]) -> Option<&str> {
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(path) = arg.strip_prefix("--image=") {
+            return Some(path);
+        }
+        if arg == "-i" || arg == "--image" {
+            return args.next().map(String::as_str);
+        }
+    }
+    None
+}
+
+/// Make a path from a command line absolute, the way that process would.
+fn resolve(path: &str, proc: &Path) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    // Relative to wherever it was started, which is not where this app was.
+    match std::fs::read_link(proc.join("cwd")) {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// The photograph, taken at most once for the life of the app.
+///
+/// Every photograph costs a monitor borrowed from the user's session and a
+/// pointer thrown across the screen and put back, and that is too much to pay
+/// on every press of Run. A wallpaper that changes while the app is open is
+/// the smaller wrong, and the honest fix for it is to use swaybg, which is
+/// read afresh every time and costs nothing.
+fn photograph(dir: &Path) -> Option<PathBuf> {
+    static PHOTO: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PHOTO.get_or_init(|| take_photograph(dir)).clone()
+}
+
+/// How to show an image that [`find_image`] found.
+pub fn prepare(image: &Path) -> Option<(PathBuf, Vec<String>)> {
+    image.is_file().then(|| show_command(image))?
+}
+
+fn take_photograph(dir: &Path) -> Option<PathBuf> {
     let image = image_path(dir);
-    // Nothing to show it with is reason enough not to take the photograph.
-    show_command(&image)?;
     let _ = std::fs::remove_file(&image);
 
     // The size comes back from the output that was actually photographed. The
@@ -256,13 +355,7 @@ pub fn capture_if_showable(dir: &Path) -> Option<()> {
         let _ = std::fs::remove_file(&image);
         return None;
     }
-    Some(())
-}
-
-/// How to show a photograph already taken.
-pub fn prepare(dir: &Path) -> Option<(PathBuf, Vec<String>)> {
-    let image = image_path(dir);
-    image.is_file().then(|| show_command(&image))?
+    Some(image)
 }
 
 #[cfg(test)]
@@ -270,23 +363,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_tool_is_told_which_file_to_show() {
-        for (name, args) in TOOLS {
-            let rendered: Vec<String> =
-                args.iter().map(|a| a.replace("{}", "/tmp/desktop.png")).collect();
-            assert!(
-                rendered.iter().any(|a| a == "/tmp/desktop.png"),
-                "{name} is never told what to show"
-            );
-        }
+    fn swaybg_is_told_what_to_show_and_how() {
+        let args = show_args(Path::new("/tmp/desktop.png"));
+        assert!(args.contains(&"/tmp/desktop.png".to_string()), "{args:?}");
+        // A whole wallpaper shown in a small pane of another shape has to be
+        // cropped; stretching it would misrepresent every proportion in it.
+        assert!(args.contains(&"fill".to_string()), "{args:?}");
     }
 
     #[test]
-    fn the_screenshot_is_cropped_to_cover_rather_than_squashed() {
-        // A whole monitor shown in a small pane of another shape has to be
-        // cropped; stretching it would misrepresent every proportion in it.
-        let (_, args) = TOOLS.iter().find(|(n, _)| *n == "swaybg").unwrap();
-        assert!(args.contains(&"fill"));
+    fn the_wallpaper_is_read_off_swaybgs_command_line() {
+        let argv = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+
+        assert_eq!(
+            image_in(&argv("swaybg -i /home/me/wall.png -m fill")),
+            Some("/home/me/wall.png")
+        );
+        assert_eq!(image_in(&argv("swaybg --image /home/me/wall.png")), Some("/home/me/wall.png"));
+        assert_eq!(image_in(&argv("swaybg --image=/home/me/wall.png")), Some("/home/me/wall.png"));
+        // One wallpaper per output: the first will do for a pane this size.
+        assert_eq!(image_in(&argv("swaybg -o DP-1 -i /a.png -o DP-2 -i /b.png")), Some("/a.png"));
+        // A flat colour is not an image, and there is nothing to show.
+        assert_eq!(image_in(&argv("swaybg -c 1e1e2e")), None);
+        // `-i` is the last word, so there is nothing after it to take.
+        assert_eq!(image_in(&argv("swaybg -i")), None);
+    }
+
+    #[test]
+    fn a_relative_wallpaper_is_resolved_where_swaybg_was_started() {
+        assert_eq!(
+            resolve("/home/me/wall.png", Path::new("/proc/1")),
+            PathBuf::from("/home/me/wall.png")
+        );
+        // No such process, so no cwd to read: left as it was rather than
+        // silently resolved against this app's own directory.
+        assert_eq!(resolve("wall.png", Path::new("/proc/nonexistent")), PathBuf::from("wall.png"));
     }
 
     #[test]
@@ -330,9 +441,62 @@ mod tests {
         assert!(!is_middle_of(&monitors, (337, 911)));
     }
 
+    /// A process table with one process in it, spelled the way /proc is.
+    fn fake_proc(pid: &str, argv: &[&str]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(pid);
+        std::fs::create_dir(&dir).unwrap();
+        let mut cmdline = Vec::new();
+        for arg in argv {
+            cmdline.extend_from_slice(arg.as_bytes());
+            cmdline.push(0);
+        }
+        std::fs::write(dir.join("cmdline"), cmdline).unwrap();
+        root
+    }
+
     #[test]
-    fn hyprpaper_is_not_offered() {
-        // It does not bind to a headless output; see the note on TOOLS.
-        assert!(!TOOLS.iter().any(|(n, _)| *n == "hyprpaper"));
+    fn a_running_swaybg_is_where_the_wallpaper_comes_from() {
+        let wall = tempfile::tempdir().unwrap();
+        let image = wall.path().join("wall.png");
+        std::fs::write(&image, b"pretend png").unwrap();
+
+        let proc_root =
+            fake_proc("1234", &["swaybg", "-o", "*", "-i", &image.to_string_lossy(), "-m", "fill"]);
+        assert_eq!(swaybg_image_under(proc_root.path(), Path::new("/run/preview")), Some(image));
+    }
+
+    #[test]
+    fn the_previews_own_swaybg_is_not_mistaken_for_the_users() {
+        // Otherwise the fallback route feeds on itself: the preview's swaybg
+        // shows the photograph, and the next preview takes that for the
+        // wallpaper — a photograph of a photograph, forever.
+        let ours = tempfile::tempdir().unwrap();
+        let photo = ours.path().join("desktop.png");
+        std::fs::write(&photo, b"pretend png").unwrap();
+
+        let proc_root =
+            fake_proc("1234", &["swaybg", "-i", &photo.to_string_lossy(), "-m", "fill"]);
+        assert_eq!(swaybg_image_under(proc_root.path(), ours.path()), None);
+    }
+
+    #[test]
+    fn nothing_else_in_the_process_table_is_taken_for_a_wallpaper() {
+        let wall = tempfile::tempdir().unwrap();
+        let image = wall.path().join("wall.png");
+        std::fs::write(&image, b"pretend png").unwrap();
+
+        // Another tool showing an image is not swaybg, and this app cannot
+        // answer for what it would do with the file.
+        let proc_root = fake_proc("1234", &["mpvpaper", "-i", &image.to_string_lossy()]);
+        assert_eq!(swaybg_image_under(proc_root.path(), Path::new("/run/preview")), None);
+
+        // A swaybg whose image has been deleted since it started.
+        let gone = fake_proc("1234", &["swaybg", "-i", "/nowhere/wall.png"]);
+        assert_eq!(swaybg_image_under(gone.path(), Path::new("/run/preview")), None);
+
+        // A swaybg showing a flat colour has no image to lend.
+        let colour = fake_proc("1234", &["swaybg", "-c", "1e1e2e"]);
+        assert_eq!(swaybg_image_under(colour.path(), Path::new("/run/preview")), None);
     }
 }
