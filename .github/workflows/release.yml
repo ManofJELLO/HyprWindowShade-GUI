@@ -1,0 +1,71 @@
+# Build the binary the AUR package installs.
+#
+# In an Arch container rather than on the maintainer's desktop, and rather
+# than on Ubuntu: the artifact links against whatever Qt and glibc it was
+# built with, so the floor it sets for users has to be Arch's current
+# versions and nothing older or newer. Building it here also means a release
+# needs nothing installed locally beyond a pushed tag.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # For checking the build works without cutting a release. Nothing is
+  # uploaded on this path.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    steps:
+      - name: Install the toolchain
+        # git is for the checkout, which falls back to a slower download
+        # without it; the rest is what the build itself needs.
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git cargo qt6-base qt6-declarative
+          # The checkout is owned by another uid inside the container, and
+          # git refuses to read a repository it thinks belongs to someone else.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@v4
+
+      - name: Test
+        # Only the engine: the UI needs a compositor, and the preview tests
+        # are ignored by default for the same reason.
+        run: cargo test --locked -p hws-core
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Stage the tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=$(git rev-parse --short HEAD)
+          dir="hyprwindowshade-gui-$version-x86_64"
+          mkdir "$dir"
+          cp target/release/hyprwindowshade-gui "$dir/"
+          cp packaging/hyprwindowshade-gui.desktop LICENSE README.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" | tee "$dir.tar.gz.sha256"
+          # The line the AUR package needs, where the maintainer can find it.
+          {
+            echo "### \`sha256sums_x86_64\` for the AUR package"
+            echo
+            echo '```'
+            awk '{print $1}' "$dir.tar.gz.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hyprwindowshade-gui-*-x86_64.tar.gz
+            hyprwindowshade-gui-*-x86_64.tar.gz.sha256

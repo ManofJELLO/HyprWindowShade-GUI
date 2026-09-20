@@ -6,7 +6,7 @@ BIN := hyprwindowshade-gui
 QMLLINT ?= qmllint
 QML_FILES := $(shell find crates/hws-gui/qml -name '*.qml')
 
-.PHONY: all build release test check install uninstall clean shots
+.PHONY: all build release test check install uninstall clean shots aur-bin
 
 all: release
 
@@ -53,6 +53,26 @@ shots: build
 	@mkdir -p shots
 	HWS_SHOT_DIR=$(PWD)/shots QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 		./target/debug/$(BIN) || true
+
+# Stage the AUR package, ready to copy into the AUR clone and push.
+#
+# The checksum can only be filled in once the release it names exists, so
+# this downloads the published artifact and hashes it rather than trusting
+# anything local. `make aur-bin VERSION=0.2.0` packages that release; with no
+# VERSION it packages whatever the PKGBUILD already says.
+aur-bin:
+	@command -v updpkgsums >/dev/null 2>&1 || { \
+		echo 'updpkgsums is missing - install pacman-contrib'; exit 1; }
+	rm -rf target/aur-bin
+	mkdir -p target/aur-bin
+	cp packaging/aur-bin/PKGBUILD target/aur-bin/PKGBUILD
+	@test -z "$(VERSION)" || sed -i 's/^pkgver=.*/pkgver=$(VERSION)/' target/aur-bin/PKGBUILD
+	cd target/aur-bin && updpkgsums && makepkg --printsrcinfo > .SRCINFO
+	@echo
+	@echo 'target/aur-bin holds PKGBUILD and .SRCINFO. To publish:'
+	@echo '  git clone ssh://aur@aur.archlinux.org/hyprwindowshade-gui-bin.git'
+	@echo '  cp target/aur-bin/PKGBUILD target/aur-bin/.SRCINFO <clone>/'
+	@echo '  cd <clone> && git commit -am "..." && git push'
 
 clean:
 	$(CARGO) clean

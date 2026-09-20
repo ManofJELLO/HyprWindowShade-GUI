@@ -6,6 +6,6 @@ Comment=Configure HyprWindowShade window and layer shaders
 Exec=hyprwindowshade-gui
 Icon=preferences-desktop-theme
 Terminal=false
-Categories=Settings;DesktopSettings;Utility;
+Categories=Settings;DesktopSettings;
 Keywords=hyprland;shader;glsl;wayland;
 StartupNotify=true

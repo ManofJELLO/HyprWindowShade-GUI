@@ -1,0 +1,47 @@
+# Maintainer: Eric Trantina
+#
+# The AUR package. It installs the binary attached to the GitHub release
+# rather than building one, which for an alpha that moves this often is the
+# difference between an update taking seconds and taking minutes.
+#
+# The -bin suffix is not optional: the AUR requires it of any package that
+# installs pre-compiled binaries. `provides`/`conflicts` name the plain
+# package so a source build can replace this one later without a fight.
+#
+# This file is the copy under review. What is pushed to the AUR is what
+# `make aur-bin` writes to target/aur-bin, which is this with the release's
+# real checksum filled in and a .SRCINFO beside it.
+pkgname=hyprwindowshade-gui-bin
+_pkgname=hyprwindowshade-gui
+_reponame=HyprWindowShade-GUI
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Qt Quick front end for the HyprWindowShade Hyprland plugin"
+arch=('x86_64')
+url="https://github.com/ManofJELLO/$_reponame"
+license=('MIT')
+# The binary is built in an Arch container against current Qt and glibc, so
+# it needs those and nothing else; everything the app shells out to is
+# optional and it says so in the UI when one is missing.
+depends=('qt6-base' 'qt6-declarative' 'glibc')
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+optdepends=('hyprland: the compositor this configures'
+            'hyprwindowshade: the plugin this configures'
+            'hyprpm: the Plugin page, which installs and reloads the plugin'
+            'grim: the shader preview, which reads frames out of a nested compositor'
+            'swaybg: your wallpaper behind the shader preview'
+            'kitty: a terminal for the preview window and "Run in a terminal" (foot, alacritty, ghostty, wezterm, konsole or xterm will do as well)')
+# Already stripped by the release profile, and there is no source to build a
+# debug package from.
+options=('!strip' '!debug')
+source_x86_64=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
+sha256sums_x86_64=('SKIP')
+
+package() {
+    cd "$_pkgname-$pkgver-x86_64"
+    install -Dm755 "$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+    install -Dm644 "$_pkgname.desktop" "$pkgdir/usr/share/applications/$_pkgname.desktop"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
