@@ -7,11 +7,23 @@ arch=('x86_64')
 url="https://github.com/ManofJELLO/hyprwindowshade-gui"
 license=('MIT')
 depends=('qt6-base' 'qt6-declarative')
-makedepends=('rust' 'cargo' 'cmake' 'pkgconf')
+makedepends=('rust')
 optdepends=('hyprland: the compositor this configures'
-            'hyprwindowshade: the plugin this configures')
+            'hyprwindowshade: the plugin this configures'
+            'hyprpm: the Plugin page, which installs and reloads the plugin'
+            'grim: the shader preview, which reads frames out of a nested compositor'
+            'swaybg: your wallpaper behind the shader preview'
+            'kitty: a terminal for the preview window and "Run in a terminal" (foot, alacritty, ghostty, wezterm, konsole or xterm will do as well)')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    # build() is --frozen, which is --offline: everything it compiles has to
+    # be here before the network goes away.
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
 
 build() {
     cd "$pkgname-$pkgver"
