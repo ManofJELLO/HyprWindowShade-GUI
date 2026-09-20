@@ -4,7 +4,6 @@
 .cargo/
 /shots
 
-# Claude Code: the skill in .claude/skills is shared project knowledge and is
-# tracked on purpose. These are per-machine and are not.
-.claude/settings.local.json
-.claude/*.local.json
+# Claude Code's own directory: local working notes and per-machine settings,
+# not part of the project.
+.claude/
