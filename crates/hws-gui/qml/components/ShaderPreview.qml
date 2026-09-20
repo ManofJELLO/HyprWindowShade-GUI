@@ -26,6 +26,19 @@ Item {
     readonly property bool showingThis: App.previewRunning
                                         && App.previewShader === pane.shaderPath
 
+    // True from the first frame drawn until the preview is not this shader's
+    // any more. What is on screen cannot be keyed on the image's own status:
+    // the frame is replaced ten times a second, and every gap between one
+    // frame and the next — or a single read that comes back late or empty —
+    // would drop the pane back to its "Not running" placeholder and flash it
+    // over a preview that is running perfectly well.
+    property bool hasFrame: false
+
+    onShowingThisChanged: {
+        if (!pane.showingThis)
+            pane.hasFrame = false
+    }
+
     // Stand the window on the user's own wallpaper, or on the pane's colour.
     property bool desktopBackdrop: true
 
@@ -47,6 +60,7 @@ Item {
     // half-way still lands, leaving a compositor cycling terminals for a pane
     // nobody can see. Stopping when nothing is running is a no-op anyway.
     function stopIfMine() {
+        pane.hasFrame = false
         if (App.previewRunning || App.previewBusy)
             App.previewStop()
     }
@@ -167,9 +181,19 @@ Item {
                 // The file keeps its name and changes underneath us, so Qt has
                 // to be told not to trust what it already read.
                 cache: false
-                asynchronous: true
-                visible: pane.showingThis && status === Image.Ready
+                // Loaded on the spot rather than on the loader thread. An
+                // asynchronous load leaves the image without a picture for the
+                // moment it takes, and at ten frames a second that moment is
+                // most of them. The tick this runs on has already waited for a
+                // `grim` of its own, so a small PNG read costs it nothing it
+                // was not already spending.
+                asynchronous: false
+                visible: pane.showingThis && pane.hasFrame
                 smooth: true
+                onStatusChanged: {
+                    if (status === Image.Ready)
+                        pane.hasFrame = true
+                }
             }
 
             EmptyState {
