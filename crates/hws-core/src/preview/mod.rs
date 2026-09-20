@@ -9,11 +9,12 @@
 //!
 //! Three things make it unobtrusive:
 //!
-//! * **It is headless.** A nested instance starts with one output — a window on
-//!   the user's screen. Creating a headless output and then removing that one
-//!   leaves the instance running with nowhere to draw but the framebuffer we
-//!   capture. Nothing appears on their desktop, and no rule has to be pushed
-//!   into their session to hide it.
+//! * **It is headless.** A nested instance would otherwise come up with one
+//!   output — a window on the user's screen. Its config disables that output
+//!   before it is ever opened, and the instance is given a headless one to draw
+//!   on instead, so the only thing it renders to is the framebuffer we capture.
+//!   Nothing appears on their desktop, not even for a moment, and no rule has
+//!   to be pushed into their session to hide it.
 //! * **It never touches their files.** The shader it renders is a copy in a
 //!   runtime directory, written from whatever is staged in the app — which is
 //!   how a preview can show an edit that has not been saved.
@@ -180,9 +181,10 @@ impl Preview {
         let shader = config::shader_path(&request.original);
         paths::write_atomic(&shader, &request.source)?;
 
-        // Before anything is started: for the moment between spawning a nested
-        // compositor and making it headless it has a window on the user's
-        // screen, and the photograph would catch the preview's own scaffolding.
+        // Before anything is started. The preview's own compositor never puts
+        // a window on the screen any more, but the app's toast and its own
+        // window are on it, and a photograph taken while a start is in flight
+        // catches whatever the click brought up.
         if request.desktop_backdrop {
             wallpaper::capture_if_showable(&dir);
         }
@@ -400,16 +402,24 @@ fn wait_for_instance(before: &[hyprctl::Instance]) -> Result<(String, String)> {
     ))
 }
 
-/// Give the instance a headless output and take away the one with a window.
+/// Give the instance the headless output it draws on.
 ///
-/// Both outputs are sized by the monitor rule in the generated config, because
-/// a `hyprctl keyword monitor` aimed at the headless output after the fact is
+/// It is sized by the monitor rule in the generated config, because a
+/// `hyprctl keyword monitor` aimed at the headless output after the fact is
 /// accepted and then ignored — which leaves the preview rendering at the
 /// default 1920x1080 with the window still laid out for something else.
+///
+/// The instance's own backend output is disabled by that config, so there is
+/// no window on the user's screen to take away. Removing it anyway is a
+/// leftover with one job: if a future Hyprland were to open the window despite
+/// the rule, this still closes it a moment later rather than leaving it up for
+/// the length of the preview. It is allowed to fail — an output that was never
+/// enabled is one Hyprland may refuse to remove, and that refusal means the
+/// rule did its work.
 fn go_headless(signature: &str) -> Result<()> {
     hyprctl::on_instance(signature, &["output", "create", "headless"])?;
     std::thread::sleep(Duration::from_millis(300));
-    hyprctl::on_instance(signature, &["output", "remove", "WAYLAND-1"])?;
+    let _ = hyprctl::on_instance(signature, &["output", "remove", "WAYLAND-1"]);
     std::thread::sleep(Duration::from_millis(400));
     Ok(())
 }

@@ -71,22 +71,29 @@ pub fn render(cfg: &PreviewConfig) -> String {
     out
 }
 
-/// Fix every output to the pane's size.
+/// Fix every output to the pane's size, and never open a window.
 ///
 /// A catch-all rule rather than one naming the headless output, because it has
 /// to be in force *before* that output exists: the preview creates it after the
 /// compositor is already up, and a `hyprctl keyword monitor` aimed at it then
 /// is accepted and quietly ignored. Declared here it simply applies on arrival.
-/// The nested instance's own backed output is briefly caught by the same rule,
-/// which only makes the window that is about to be removed smaller. `auto`
-/// placement rather than a fixed origin, because for the moment both outputs
-/// exist a shared origin is an overlapping layout — and Hyprland says so in a
-/// banner across the preview.
+/// `auto` placement rather than a fixed origin, because for the moment both
+/// outputs exist a shared origin is an overlapping layout — and Hyprland says
+/// so in a banner across the preview.
+///
+/// `WAYLAND-1` is the nested instance's own backend output, which is a window
+/// on the user's screen — `aquamarine - WAYLAND-1`. Disabling it here means
+/// that window is never opened at all. Removing the output afterwards, which is
+/// what the preview used to rely on, could only ever take the window away a
+/// second after it had already appeared. An instance whose only output is
+/// disabled still comes up and still registers itself, and the headless output
+/// it draws on is created moments later.
 fn emit_monitor(out: &mut String, cfg: &PreviewConfig) {
     let (w, h) = cfg.size;
     out.push_str(&format!(
-        "hl.monitor({{ output = \"\", mode = \"{w}x{h}@60\", position = \"auto\", scale = 1 }})\n\n"
+        "hl.monitor({{ output = \"\", mode = \"{w}x{h}@60\", position = \"auto\", scale = 1 }})\n"
     ));
+    out.push_str("hl.monitor({ output = \"WAYLAND-1\", disabled = true })\n\n");
 }
 
 fn emit_curves(out: &mut String, cfg: &PreviewConfig) {
@@ -389,6 +396,15 @@ mod tests {
                 r#"hl.monitor({ output = "", mode = "640x400@60", position = "auto", scale = 1 })"#
             ),
             "the mode has to be declared, not set at runtime"
+        );
+    }
+
+    #[test]
+    fn the_instances_own_window_is_disabled_before_it_opens() {
+        assert!(
+            render(&config()).contains(r#"hl.monitor({ output = "WAYLAND-1", disabled = true })"#),
+            "without this the nested compositor opens a window on the user's screen, and \
+             removing the output afterwards can only take it away again a second later"
         );
     }
 
