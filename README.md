@@ -22,7 +22,7 @@ palette is a small TOML file.
 ## Contents
 
 - [What it looks like](#what-it-looks-like)
-- [Requirements](#requirements) · [Build and install](#build-and-install)
+- [Requirements](#requirements) · [Install](#install) · [Build from source](#build-from-source)
 - [How it writes your config](#how-it-writes-your-config)
 - [Shader parameters](#shader-parameters) · [Seeing a shader before you save it](#seeing-a-shader-before-you-save-it)
 - [Themes](#themes)
@@ -89,11 +89,41 @@ xterm, whichever it finds.
 The **Plugin** page needs `hyprpm`, which on Arch is a package of its own rather than part
 of `hyprland`.
 
-## Build and install
+## Install
+
+### On Arch
+
+The package is `hyprwindowshade-gui-bin`: the binary from the latest release,
+built in an Arch container against current Qt and glibc, so installing it costs
+a download rather than a Rust toolchain and a compile.
 
 ```sh
-git clone https://github.com/ManofJELLO/hyprwindowshade-gui
-cd hyprwindowshade-gui
+git clone https://github.com/ManofJELLO/HyprWindowShade-GUI
+cd HyprWindowShade-GUI/packaging/aur-bin
+makepkg -si
+```
+
+It is not on the AUR yet — new account registration there is paused while they
+deal with a wave of bot signups, and this is waiting on it. The PKGBUILD above
+is the one that will be pushed when it reopens, checksum and all, so nothing
+about the package changes when it lands.
+
+### Anywhere else
+
+Every release has a `hyprwindowshade-gui-<version>-x86_64.tar.gz` on its
+[releases page](https://github.com/ManofJELLO/HyprWindowShade-GUI/releases)
+holding the binary, the desktop entry, the licence and this README, with a
+`.sha256` beside it. The binary needs nothing but Qt 6 — the QML is compiled
+into it — so unpacking it somewhere on your `PATH` is a complete install.
+
+It is built against current Arch's Qt and glibc, which is the floor it sets:
+on a distribution further behind, build from source instead.
+
+## Build from source
+
+```sh
+git clone https://github.com/ManofJELLO/HyprWindowShade-GUI
+cd HyprWindowShade-GUI
 cargo build --release
 ```
 
@@ -114,7 +144,9 @@ make install PREFIX=~/.local
 Build as yourself first, or root's artifacts end up in `target/` and your next
 `cargo build` cannot clean them.
 
-An Arch `PKGBUILD` is in `packaging/`.
+Two `PKGBUILD`s live in `packaging/`: `aur-bin/` is the package described
+above, which installs a released binary, and the one beside it builds from
+source instead.
 
 ---
 

@@ -8,9 +8,11 @@
 # installs pre-compiled binaries. `provides`/`conflicts` name the plain
 # package so a source build can replace this one later without a fight.
 #
-# This file is the copy under review. What is pushed to the AUR is what
-# `make aur-bin` writes to target/aur-bin, which is this with the release's
-# real checksum filled in and a .SRCINFO beside it.
+# This file is usable as it stands: `makepkg -si` here installs the release
+# it names, checksum and all. `make aur-bin` copies it to target/aur-bin,
+# re-derives the checksum from what is actually published — which is how the
+# one below is checked rather than trusted — and writes the .SRCINFO the AUR
+# requires beside it.
 pkgname=hyprwindowshade-gui-bin
 _pkgname=hyprwindowshade-gui
 _reponame=HyprWindowShade-GUI
@@ -41,7 +43,7 @@ optdepends=('hyprland: the compositor this configures'
 # debug package from.
 options=('!strip' '!debug')
 source_x86_64=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-$CARCH.tar.gz")
-sha256sums_x86_64=('SKIP')
+sha256sums_x86_64=('0e3b167eaf4849772df53c396bb0b8e23b8b451bced977bea4a96a9078b9bd19')
 
 package() {
     cd "$_pkgname-$pkgver-$CARCH"
