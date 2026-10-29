@@ -16,7 +16,7 @@
 pkgname=hyprwindowshade-gui-bin
 _pkgname=hyprwindowshade-gui
 _reponame=HyprWindowShade-GUI
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Qt Quick front end for the HyprWindowShade Hyprland plugin"
 arch=('x86_64')
@@ -43,7 +43,7 @@ optdepends=('hyprland: the compositor this configures'
 # debug package from.
 options=('!strip' '!debug')
 source_x86_64=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-$CARCH.tar.gz")
-sha256sums_x86_64=('0e3b167eaf4849772df53c396bb0b8e23b8b451bced977bea4a96a9078b9bd19')
+sha256sums_x86_64=('51c24e7f6d03f36d39ee65f2d37671024ffe852e631d617c1c37912868778ccc')
 
 package() {
     cd "$_pkgname-$pkgver-$CARCH"
