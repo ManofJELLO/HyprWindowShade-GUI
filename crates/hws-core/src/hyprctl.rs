@@ -273,6 +273,9 @@ struct RawOption {
     float: Option<f64>,
     #[serde(default)]
     bool: Option<bool>,
+    /// A gap-style option, as `"top right bottom left"`.
+    #[serde(default)]
+    css: Option<String>,
     /// False when the option name was not recognised at all.
     #[serde(default)]
     set: bool,
@@ -291,6 +294,32 @@ fn option(name: &str) -> Option<RawOption> {
 pub fn option_int(name: &str) -> Option<i64> {
     let o = option(name)?;
     o.int.or_else(|| o.bool.map(i64::from))
+}
+
+/// A gap-style option as its four sides — top, right, bottom, left — or
+/// `None`.
+///
+/// Hyprland reports `general:gaps_in` and its kind as a CSS-style string, not
+/// an int, so [`option_int`] never sees them. A plain int is still accepted,
+/// for a version that reports one.
+pub fn option_sides(name: &str) -> Option<[i64; 4]> {
+    let o = option(name)?;
+    match o.css {
+        Some(css) => parse_sides(&css),
+        None => o.int.map(|v| [v; 4]),
+    }
+}
+
+/// Read a CSS shorthand of one to four values into top, right, bottom, left.
+fn parse_sides(css: &str) -> Option<[i64; 4]> {
+    let v: Vec<i64> = css.split_whitespace().map(|s| s.parse().ok()).collect::<Option<_>>()?;
+    match v[..] {
+        [a] => Some([a, a, a, a]),
+        [tb, rl] => Some([tb, rl, tb, rl]),
+        [t, rl, b] => Some([t, rl, b, rl]),
+        [t, r, b, l] => Some([t, r, b, l]),
+        _ => None,
+    }
 }
 
 /// A float option, or `None`.
@@ -393,6 +422,25 @@ mod tests {
     #[test]
     fn silence_is_success() {
         assert!(check_dispatch_output("", "").is_ok());
+    }
+
+    #[test]
+    fn gaps_are_read_from_the_css_string_hyprland_reports() {
+        // Verbatim `hyprctl getoption general:gaps_in -j` on 0.57.
+        let json = r#"{"option": "general:gaps_in", "css": "2 2 2 2", "set": true }"#;
+        let raw: RawOption = serde_json::from_str(json).unwrap();
+        assert_eq!(raw.int, None, "which is why option_int could not read it");
+        assert_eq!(parse_sides(&raw.css.unwrap()), Some([2, 2, 2, 2]));
+    }
+
+    #[test]
+    fn short_css_expands_the_way_css_does() {
+        assert_eq!(parse_sides("1 4 4 4"), Some([1, 4, 4, 4]));
+        assert_eq!(parse_sides("3"), Some([3, 3, 3, 3]));
+        assert_eq!(parse_sides("1 2"), Some([1, 2, 1, 2]));
+        assert_eq!(parse_sides("1 2 3"), Some([1, 2, 3, 2]));
+        assert_eq!(parse_sides(""), None);
+        assert_eq!(parse_sides("1 x"), None);
     }
 
     #[test]

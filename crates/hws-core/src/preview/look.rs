@@ -60,8 +60,8 @@ pub struct Animation {
 /// The compositor settings the preview mirrors.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Look {
-    /// `general:gaps_in`.
-    pub gaps_in: i64,
+    /// `general:gaps_in`, as top, right, bottom, left.
+    pub gaps_in: [i64; 4],
     /// `general:border_size`.
     pub border_size: i64,
     /// `decoration:rounding`.
@@ -85,7 +85,7 @@ impl Default for Look {
         // Hyprland's own defaults, so a preview on a machine that cannot be
         // asked still looks like a stock desktop rather than like nothing.
         Self {
-            gaps_in: 5,
+            gaps_in: [5; 4],
             border_size: 2,
             rounding: 0,
             active_opacity: 1.0,
@@ -107,7 +107,7 @@ impl Look {
     pub fn from_host() -> Self {
         let d = Look::default();
         let mut look = Look {
-            gaps_in: hyprctl::option_int("general:gaps_in").unwrap_or(d.gaps_in),
+            gaps_in: hyprctl::option_sides("general:gaps_in").unwrap_or(d.gaps_in),
             border_size: hyprctl::option_int("general:border_size").unwrap_or(d.border_size),
             rounding: hyprctl::option_int("decoration:rounding").unwrap_or(d.rounding),
             active_opacity: hyprctl::option_float("decoration:active_opacity")

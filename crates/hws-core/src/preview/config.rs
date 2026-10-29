@@ -138,11 +138,21 @@ fn emit_animations(out: &mut String, cfg: &PreviewConfig) {
     out.push('\n');
 }
 
+/// A gap the way the user's own config would spell it: one number when every
+/// side agrees, the per-side table when they do not.
+fn gaps_lua([top, right, bottom, left]: [i64; 4]) -> String {
+    if top == right && right == bottom && bottom == left {
+        top.to_string()
+    } else {
+        format!("{{ top = {top}, right = {right}, bottom = {bottom}, left = {left} }}")
+    }
+}
+
 fn emit_look(out: &mut String, cfg: &PreviewConfig) {
     let l = &cfg.look;
     out.push_str("hl.config({\n");
     out.push_str("    general = {\n");
-    out.push_str(&format!("        gaps_in     = {},\n", l.gaps_in));
+    out.push_str(&format!("        gaps_in     = {},\n", gaps_lua(l.gaps_in)));
     // Not the user's gaps_out: this is a small pane, not a monitor, and their
     // desktop margins would push the window off it.
     out.push_str("        gaps_out    = 14,\n");
@@ -421,6 +431,20 @@ mod tests {
         ] {
             assert!(out.contains(option), "{option} is not disabled");
         }
+    }
+
+    #[test]
+    fn gaps_are_one_number_until_the_sides_differ() {
+        let mut cfg = config();
+        cfg.look.gaps_in = [2; 4];
+        assert!(render(&cfg).contains("gaps_in     = 2,\n"));
+
+        cfg.look.gaps_in = [1, 4, 4, 4];
+        let out = render(&cfg);
+        assert!(
+            out.contains("gaps_in     = { top = 1, right = 4, bottom = 4, left = 4 },"),
+            "{out}"
+        );
     }
 
     #[test]
