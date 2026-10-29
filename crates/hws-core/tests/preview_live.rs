@@ -30,6 +30,21 @@ fn out_dir() -> PathBuf {
     std::env::var_os("HWS_PREVIEW_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
 }
 
+/// The colour at `(x, y)` of a captured frame.
+fn pixel(png_bytes: &[u8], (x, y): (usize, usize)) -> [u8; 3] {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png_bytes)).read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    let channels = info.color_type.samples();
+    let at = y * info.line_size + x * channels;
+    [buf[at], buf[at + 1], buf[at + 2]]
+}
+
+/// Plain terminal background, low in the left half of the pane: below the
+/// test card however far it has scrolled, and inside the first window even
+/// while the neighbour has it tiled to half width.
+const BACKGROUND: (usize, usize) = (100, 400);
+
 const SHADER: &str = r#"#version 320 es
 precision highp float;
 // @label Live preview test
@@ -90,7 +105,13 @@ fn a_preview_runs_and_answers_to_an_edit() {
     let after = std::fs::read(preview.capture().expect("a second frame")).expect("the frame file");
     std::fs::write(out_dir().join("preview-after.png"), &after).unwrap();
 
-    assert_ne!(before, after, "editing the shader should change what is on screen");
+    // By colour, not by bytes: the terminal scrolls, so two frames differ
+    // whether or not a shader is on the window at all — which is how a preview
+    // drawing no shader whatsoever once passed this test.
+    let [r, _, b] = pixel(&before, BACKGROUND);
+    assert!(r > b + 40, "the window should be tinted orange, got {:?}", pixel(&before, BACKGROUND));
+    let [r, _, b] = pixel(&after, BACKGROUND);
+    assert!(b > r + 40, "the edit should have tinted it blue, got {:?}", pixel(&after, BACKGROUND));
 
     // The UI pushes the staged source on every state change, and the state
     // changes by itself every few seconds when the compositor is probed. If an

@@ -206,6 +206,17 @@ fn emit_rule(out: &mut String, cfg: &PreviewConfig) {
         ));
         out.push_str("})\n");
     }
+
+    // The plugin draws nothing over a fullscreen or maximized window unless it
+    // opted in, and on 0.57 the demo terminal asks to be maximized as it maps.
+    // Granted, every window in the cycle came up unshaded — the neighbour too,
+    // since a window opened over a maximized one inherits its mode — and only
+    // took its shader once focus moved and the request was forgotten.
+    out.push_str("\nhl.window_rule({\n");
+    out.push_str("    name           = \"hws-preview-stay-tiled\",\n");
+    out.push_str(&format!("    match          = {{ class = {} }},\n", lua_quote(&cfg.demo_class)));
+    out.push_str("    suppress_event = \"maximize fullscreen\",\n");
+    out.push_str("})\n");
     out.push('\n');
 }
 
@@ -334,7 +345,7 @@ mod tests {
         let out = render(&cfg);
         assert!(out.contains("+shader_open:"), "{out}");
         assert!(out.contains("+shader_close:"), "{out}");
-        assert_eq!(out.matches("hl.window_rule({").count(), 2);
+        assert_eq!(out.matches("    tag   = ").count(), 2);
         // A plain `shader` tag would leave a progress-driven effect frozen
         // on screen for the whole hold.
         assert!(!out.contains(r#"tag   = "+shader:"#), "{out}");
@@ -431,6 +442,12 @@ mod tests {
         ] {
             assert!(out.contains(option), "{option} is not disabled");
         }
+    }
+
+    #[test]
+    fn the_demo_window_is_never_maximized() {
+        let out = render(&config());
+        assert!(out.contains(r#"suppress_event = "maximize fullscreen","#), "{out}");
     }
 
     #[test]
