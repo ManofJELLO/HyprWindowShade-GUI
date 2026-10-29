@@ -68,8 +68,7 @@ own save: the header **Save** writes your Hyprland config, and **Save shader** w
 * **Qt 6.4 or newer**, with Qt Quick and Qt Quick Controls. On Arch that is
   `qt6-base` and `qt6-declarative`.
 * **HyprWindowShade** itself, and a Lua Hyprland config (`~/.config/hypr/hyprland.lua`).
-  `hyprland.conf` is not supported here — the plugin's own README explains why `.conf` is on
-  its way out.
+  Hyprland 0.57 dropped `hyprland.conf` altogether, and so has the plugin.
 
 Hyprland does not have to be running. Without it the app still edits your config and your
 shaders; it just cannot offer you the list of open window classes or live layer namespaces,
