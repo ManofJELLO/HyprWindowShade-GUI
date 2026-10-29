@@ -5,7 +5,7 @@
 # from the GitHub release instead. Keep this one for building your own.
 pkgname=hyprwindowshade-gui
 _reponame=HyprWindowShade-GUI
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Qt Quick front end for the HyprWindowShade Hyprland plugin"
 arch=('x86_64')
